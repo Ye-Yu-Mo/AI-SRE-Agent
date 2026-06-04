@@ -1,0 +1,37 @@
+# Binaries
+agent/ai-server-agent
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Go
+*.test
+*.out
+vendor/
+
+# Node
+mcp-server/node_modules/
+mcp-server/dist/
+node_modules/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.md
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets (local only)
+.env
+*.pem
+secret
+!secret.example
+
+# Logs
+*.log
