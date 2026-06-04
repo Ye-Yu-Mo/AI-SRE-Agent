@@ -7,6 +7,9 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/ai-sre/agent/internal/plan"
+	"github.com/ai-sre/agent/internal/storage"
 )
 
 func listen(t *testing.T) net.Listener {
@@ -30,7 +33,8 @@ func TestServerStartupAndHealth(t *testing.T) {
 		Dir:    dir,
 		Secret: "test-secret",
 	}
-	srv := newServer(cfg, ln)
+	auditStore, _ := storage.NewStore(t.TempDir())
+	srv := newServer(cfg, plan.NewStore(), auditStore, ln)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -59,7 +63,8 @@ func TestServerSecretRejection(t *testing.T) {
 		Dir:    dir,
 		Secret: "correct-secret",
 	}
-	srv := newServer(cfg, ln)
+	auditStore, _ := storage.NewStore(t.TempDir())
+	srv := newServer(cfg, plan.NewStore(), auditStore, ln)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

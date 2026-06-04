@@ -1,5 +1,6 @@
 # Binaries
 agent/ai-server-agent
+agent/agent
 *.exe
 *.dll
 *.so
@@ -21,8 +22,6 @@ node_modules/
 *.swp
 *.swo
 *~
-*.md
-test_project/
 
 # OS
 .DS_Store
@@ -36,3 +35,7 @@ secret
 
 # Logs
 *.log
+
+# Test artifacts
+test_project/
+*.md

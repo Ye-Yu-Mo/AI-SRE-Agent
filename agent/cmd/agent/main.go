@@ -2,17 +2,30 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
+	"time"
 
+	"github.com/ai-sre/agent/internal/action"
+	"github.com/ai-sre/agent/internal/collector"
+	"github.com/ai-sre/agent/internal/executor"
 	"github.com/ai-sre/agent/internal/identity"
+	"github.com/ai-sre/agent/internal/plan"
+	"github.com/ai-sre/agent/internal/risk"
+	"github.com/ai-sre/agent/internal/storage"
 )
 
 type Config struct {
@@ -78,7 +91,12 @@ func run(cfg *Config) error {
 		return fmt.Errorf("listen: %w", err)
 	}
 
-	srv := newServer(cfg, ln)
+	planStore := plan.NewStore()
+	auditStore, err := storage.NewStore(filepath.Join(cfg.Dir, "data"))
+	if err != nil {
+		return fmt.Errorf("storage: %w", err)
+	}
+	srv := newServer(cfg, planStore, auditStore, ln)
 
 	// 信号处理
 	sigCh := make(chan os.Signal, 1)
@@ -97,23 +115,359 @@ func run(cfg *Config) error {
 	return nil
 }
 
-func newServer(cfg *Config, ln net.Listener) *http.Server {
+type server struct {
+	cfg        *Config
+	planStore  *plan.Store
+	auditStore *storage.Store
+	exec       *executor.SystemdExecutor
+}
+
+func newServer(cfg *Config, planStore *plan.Store, auditStore *storage.Store, ln net.Listener) *http.Server {
+	s := &server{cfg: cfg, planStore: planStore, auditStore: auditStore, exec: &executor.SystemdExecutor{}}
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"ok"}`))
+		jsonOK(w, map[string]string{"status": "ok"})
 	})
 
 	apiMux := http.NewServeMux()
 	apiMux.HandleFunc("/api/v1/inspect", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"not yet implemented"}`))
+		s.handleInspect(w, r)
+	})
+	apiMux.HandleFunc("/api/v1/health", handleHealth)
+	apiMux.HandleFunc("/api/v1/resources", handleResources)
+	apiMux.HandleFunc("/api/v1/services", handleServices)
+	apiMux.HandleFunc("/api/v1/services/", func(w http.ResponseWriter, r *http.Request) {
+		s.handleServiceLogs(w, r)
+	})
+	apiMux.HandleFunc("/api/v1/plans", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			s.handlePlanCreate(w, r)
+		default:
+			http.Error(w, "method not allowed", 405)
+		}
+	})
+	apiMux.HandleFunc("/api/v1/plans/", func(w http.ResponseWriter, r *http.Request) {
+		s.handlePlanByID(w, r)
+	})
+	apiMux.HandleFunc("/api/v1/audit", func(w http.ResponseWriter, r *http.Request) {
+		s.handleAudit(w, r)
 	})
 
 	mux.Handle("/api/", authMiddleware(cfg.Secret, apiMux))
 
 	return &http.Server{Handler: mux}
+}
+
+func (s *server) handleInspect(w http.ResponseWriter, _ *http.Request) {
+	osInfo := collector.OSInfo("/etc", "/proc")
+	cpu, _ := collector.CPUInfo("/proc")
+	mem, _ := collector.MemoryInfo("/proc")
+	disk, _ := collector.DiskInfo("/")
+	ports := collector.PortProcessMapping("/proc")
+
+	result := map[string]interface{}{
+		"hostname":   osInfo.Name,
+		"os":         osInfo.Name,
+		"os_version": osInfo.VersionID,
+		"kernel":     osInfo.Kernel,
+		"arch":       osInfo.Arch,
+	}
+	if cpu != nil {
+		result["cpu_percent"] = cpu.Percent
+		result["cpu_cores"] = cpu.NumCores
+		result["cpu_model"] = cpu.ModelName
+	}
+	if mem != nil {
+		result["memory_total"] = mem.Total
+		result["memory_used"] = mem.Used
+		result["memory_percent"] = mem.UsedPercent
+	}
+	if disk != nil {
+		result["disk_total"] = disk.Total
+		result["disk_used"] = disk.Used
+		result["disk_percent"] = disk.UsedPercent
+	}
+	if len(ports) > 0 {
+		result["listening_ports"] = ports
+	}
+	jsonOK(w, result)
+}
+
+func (s *server) handleServiceLogs(w http.ResponseWriter, r *http.Request) {
+	// URL: /api/v1/services/{name}/logs?lines=50
+	path := strings.TrimPrefix(r.URL.Path, "/api/v1/services/")
+	name := strings.TrimRight(strings.TrimSuffix(path, "/logs"), "/")
+	if name == "" {
+		http.Error(w, `{"error":"service name required"}`, 400)
+		return
+	}
+	lines := r.URL.Query().Get("lines")
+	if lines == "" {
+		lines = "50"
+	}
+	n, _ := strconv.Atoi(lines)
+	if n <= 0 || n > 1000 {
+		n = 50
+	}
+
+	out, err := exec.Command("journalctl", "-u", name, "--no-pager", "-n", strconv.Itoa(n), "-o", "short-iso").Output()
+	if err != nil {
+		jsonOK(w, map[string]interface{}{"service": name, "lines": []string{}, "error": err.Error()})
+		return
+	}
+	logLines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(logLines) == 1 && logLines[0] == "" {
+		logLines = nil
+	}
+	jsonOK(w, map[string]interface{}{"service": name, "lines": logLines, "total": len(logLines)})
+}
+
+func (s *server) handleAudit(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	events, err := s.auditStore.SearchAudit(
+		q.Get("server_id"),
+		q.Get("action_type"),
+		q.Get("result"),
+		50,
+	)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), 500)
+		return
+	}
+	if events == nil {
+		events = []storage.AuditEvent{}
+	}
+	jsonOK(w, map[string]interface{}{"events": events, "total": len(events)})
+}
+
+func handleHealth(w http.ResponseWriter, _ *http.Request) {
+	var warnings []string
+
+	mem, err := collector.MemoryInfo("/proc")
+	if err == nil && mem.UsedPercent > 90 {
+		warnings = append(warnings, fmt.Sprintf("memory usage %.1f%%", mem.UsedPercent))
+	}
+
+	disk, err := collector.DiskInfo("/")
+	if err == nil && disk.UsedPercent > 85 {
+		warnings = append(warnings, fmt.Sprintf("disk usage %.1f%% on /", disk.UsedPercent))
+	}
+
+	status := "healthy"
+	if len(warnings) > 0 {
+		status = "warning"
+	}
+
+	jsonOK(w, map[string]interface{}{
+		"status":   status,
+		"warnings": warnings,
+	})
+}
+
+func handleResources(w http.ResponseWriter, _ *http.Request) {
+	cpu, _ := collector.CPUInfo("/proc")
+	mem, _ := collector.MemoryInfo("/proc")
+	disk, _ := collector.DiskInfo("/")
+
+	result := map[string]interface{}{}
+	if cpu != nil {
+		result["cpu_percent"] = cpu.Percent
+		result["cpu_cores"] = cpu.NumCores
+	}
+	if mem != nil {
+		result["memory_percent"] = mem.UsedPercent
+		result["memory_total"] = mem.Total
+		result["memory_used"] = mem.Used
+	}
+	if disk != nil {
+		result["disk_percent"] = disk.UsedPercent
+		result["disk_total"] = disk.Total
+		result["disk_used"] = disk.Used
+	}
+	jsonOK(w, result)
+}
+
+// systemd 服务列表（通过 systemctl list-units）
+func handleServices(w http.ResponseWriter, _ *http.Request) {
+	out, err := exec.Command(
+		"systemctl", "list-units", "--type=service",
+		"--no-legend", "--no-pager",
+	).Output()
+	if err != nil {
+		jsonOK(w, map[string]interface{}{"services": []string{}})
+		return
+	}
+
+	var services []map[string]string
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.Contains(line, "●") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 4 {
+			continue
+		}
+		services = append(services, map[string]string{
+			"name":   fields[0],
+			"load":   fields[1],
+			"status": fields[2],
+			"sub":    fields[3],
+		})
+	}
+	jsonOK(w, map[string]interface{}{"services": services})
+}
+
+func (s *server) handlePlanCreate(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Intent   string          `json:"intent"`
+		ServerID string          `json:"server_id"`
+		Actions  []action.Action `json:"actions"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid JSON"}`, 400)
+		return
+	}
+	if req.Intent == "" || len(req.Actions) == 0 {
+		http.Error(w, `{"error":"intent and actions required"}`, 400)
+		return
+	}
+
+	// 风险分级
+	for i := range req.Actions {
+		req.Actions[i].ID = fmt.Sprintf("act_%s_%d", randStr(8), i)
+		r := risk.Classify(req.Actions[i], "production")
+		req.Actions[i].Risk = r.Level
+		req.Actions[i].RequiresApproval = r.Decision.RequiresApproval()
+		req.Actions[i].CreatedBy = "ai-agent"
+		req.Actions[i].CreatedAt = timeNow()
+	}
+
+	planID := "plan_" + randStr(12)
+	p := &action.Plan{
+		ID:               planID,
+		Intent:           req.Intent,
+		ServerID:         req.ServerID,
+		Status:           action.PlanPending,
+		RequiresApproval: req.Actions[0].RequiresApproval,
+		CreatedAt:        timeNow(),
+		ExpiresAt:        timeNow().Add(10 * time.Minute),
+	}
+
+	var maxRisk action.RiskLevel
+	for _, a := range req.Actions {
+		p.Steps = append(p.Steps, action.ActionStep{Step: len(p.Steps) + 1, Action: a})
+		if riskOrder(a.Risk) > riskOrder(maxRisk) {
+			maxRisk = a.Risk
+		}
+	}
+	p.Risk = maxRisk
+
+	s.planStore.Create(p)
+
+	jsonOK(w, p)
+}
+
+func (s *server) handlePlanByID(w http.ResponseWriter, r *http.Request) {
+	// URL: /api/v1/plans/{id} or /api/v1/plans/{id}/apply
+	path := strings.TrimPrefix(r.URL.Path, "/api/v1/plans/")
+	parts := strings.SplitN(path, "/", 2)
+	planID := parts[0]
+
+	switch {
+	case len(parts) == 1 && r.Method == http.MethodGet:
+		p, ok := s.planStore.Get(planID)
+		if !ok {
+			http.Error(w, `{"error":"plan not found"}`, 404)
+			return
+		}
+		jsonOK(w, p)
+
+	case len(parts) == 2 && parts[1] == "apply" && r.Method == http.MethodPost:
+		p, ok := s.planStore.Get(planID)
+		if !ok {
+			http.Error(w, `{"error":"plan not found"}`, 404)
+			return
+		}
+		if p.IsExpired() {
+			http.Error(w, `{"error":"plan expired"}`, 410)
+			return
+		}
+
+		s.planStore.UpdateStatus(planID, action.PlanApproved)
+		s.planStore.UpdateStatus(planID, action.PlanRunning)
+
+		var results []executor.ActionResult
+		for _, step := range p.Steps {
+			result, err := s.exec.Execute(r.Context(), step.Action)
+			if err != nil {
+				http.Error(w, fmt.Sprintf(`{"error":"execution error: %v"}`, err), 500)
+				return
+			}
+			results = append(results, *result)
+		}
+
+		s.planStore.UpdateStatus(planID, action.PlanSucceeded)
+
+		// 写 audit log
+		for i, step := range p.Steps {
+			r := results[i]
+			bs, _ := json.Marshal(r.BeforeState)
+			as, _ := json.Marshal(r.AfterState)
+			s.auditStore.RecordAudit(storage.AuditEvent{
+				ServerID:    p.ServerID,
+				PlanID:      planID,
+				ActionID:    step.Action.ID,
+				ActionType:  string(step.Action.Type),
+				Target:      step.Action.Target.Name,
+				Risk:        string(step.Action.Risk),
+				Result:      map[bool]string{true: "succeeded", false: "failed"}[r.Success],
+				BeforeState: string(bs),
+				AfterState:  string(as),
+				Stdout:      r.Stdout,
+				Stderr:      r.Stderr,
+			})
+		}
+
+		jsonOK(w, map[string]interface{}{
+			"plan_id": planID,
+			"status":  "succeeded",
+			"results": results,
+		})
+
+	default:
+		http.Error(w, "method not allowed", 405)
+	}
+}
+
+func riskOrder(r action.RiskLevel) int {
+	switch r {
+	case action.RiskLow:
+		return 0
+	case action.RiskMedium:
+		return 1
+	case action.RiskHigh:
+		return 2
+	case action.RiskCritical:
+		return 3
+	default:
+		return 0
+	}
+}
+
+func randStr(n int) string {
+	b := make([]byte, (n+1)/2)
+	rand.Read(b)
+	return hex.EncodeToString(b)[:n]
+}
+
+func timeNow() time.Time { return time.Now().UTC() }
+
+func jsonOK(w http.ResponseWriter, v interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(v)
 }
 
 func authMiddleware(secret string, next http.Handler) http.Handler {
