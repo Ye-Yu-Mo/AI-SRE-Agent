@@ -22,6 +22,7 @@ node_modules/
 *.swo
 *~
 *.md
+test_project/
 
 # OS
 .DS_Store
