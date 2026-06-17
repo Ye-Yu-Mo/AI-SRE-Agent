@@ -2,7 +2,6 @@ package graph
 
 import (
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 
@@ -191,6 +190,3 @@ func detectComposeProjects(containers []collector.DockerContainer) map[string][]
 	}
 	return projects
 }
-
-// suppress unused import warning
-var _ = exec.Command

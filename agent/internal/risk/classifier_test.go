@@ -108,6 +108,58 @@ func TestClassify_UnknownActionType(t *testing.T) {
 	}
 }
 
+// M1: 停止生产数据库是不可逆的破坏性操作，必须 critical + deny，
+// 在 plan 创建阶段就拦下，而不是等审批。restart 仍是 high（可恢复）。
+func TestClassify_StopDatabaseIsCriticalDeny(t *testing.T) {
+	dbServices := []string{"postgresql", "postgres", "mysql", "mariadb", "mongod", "redis"}
+	for _, svc := range dbServices {
+		act := action.Action{
+			ID:     "x",
+			Type:   action.ActionServiceStop,
+			Target: action.Target{Kind: "systemd_service", Name: svc},
+		}
+		got := Classify(act, "production")
+		if got.Level != action.RiskCritical {
+			t.Errorf("stop %s: level = %s, want critical", svc, got.Level)
+		}
+		if got.Decision != DecisionDeny {
+			t.Errorf("stop %s: decision = %s, want deny", svc, got.Decision)
+		}
+	}
+}
+
+// docker.stop 数据库容器同样 critical + deny。
+func TestClassify_StopDatabaseContainerIsCriticalDeny(t *testing.T) {
+	act := action.Action{
+		ID:     "x",
+		Type:   action.ActionDockerStop,
+		Target: action.Target{Kind: "docker_container", Name: "postgres"},
+	}
+	got := Classify(act, "production")
+	if got.Level != action.RiskCritical {
+		t.Errorf("stop postgres container: level = %s, want critical", got.Level)
+	}
+	if got.Decision != DecisionDeny {
+		t.Errorf("stop postgres container: decision = %s, want deny", got.Decision)
+	}
+}
+
+// 停止非数据库服务不应升级为 critical——别误伤正常操作。
+func TestClassify_StopNonDatabaseStaysMedium(t *testing.T) {
+	act := action.Action{
+		ID:     "x",
+		Type:   action.ActionServiceStop,
+		Target: action.Target{Kind: "systemd_service", Name: "nginx"},
+	}
+	got := Classify(act, "production")
+	if got.Level != action.RiskMedium {
+		t.Errorf("stop nginx: level = %s, want medium", got.Level)
+	}
+	if got.Decision != DecisionApprovalRequired {
+		t.Errorf("stop nginx: decision = %s, want approval_required", got.Decision)
+	}
+}
+
 func TestClassify_EmptyEnvironmentDefaultsToProduction(t *testing.T) {
 	act := action.Action{
 		ID:     "x",

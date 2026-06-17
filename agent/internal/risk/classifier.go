@@ -56,21 +56,18 @@ func Classify(act action.Action, env string) Result {
 func classifyWriteAction(act action.Action) action.RiskLevel {
 	svc := strings.ToLower(act.Target.Name)
 
-	// 数据库相关的 service → high
+	// stop 数据库是不可逆破坏性操作 → critical（在 plan 创建阶段直接 deny）
+	// restart 数据库仍是 high（有恢复路径）
+	if isStopAction(act.Type) && isDatabaseService(svc) {
+		return action.RiskCritical
+	}
+
+	// 数据库 restart → high
 	if isDatabaseService(svc) {
 		return action.RiskHigh
 	}
 
-	// systemd service write → medium
-	if isSystemdAction(act.Type) {
-		return action.RiskMedium
-	}
-
-	// docker write → medium
-	if isDockerAction(act.Type) {
-		return action.RiskMedium
-	}
-
+	// 其余 systemd/docker 写操作 → medium
 	return action.RiskMedium
 }
 
@@ -103,6 +100,10 @@ func isDatabaseService(name string) bool {
 		}
 	}
 	return false
+}
+
+func isStopAction(t action.ActionType) bool {
+	return t == action.ActionServiceStop || t == action.ActionDockerStop
 }
 
 func isSystemdAction(t action.ActionType) bool {

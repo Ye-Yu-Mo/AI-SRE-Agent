@@ -477,6 +477,19 @@ func (s *server) handlePlanByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// M1: approval 闸门。requires_approval=true 时必须显式携带 approve:true。
+		// 单机阶段调用方自己声明确认；后续里程碑替换为远程审批 token。
+		if p.RequiresApproval {
+			var body struct {
+				Approve bool `json:"approve"`
+			}
+			json.NewDecoder(r.Body).Decode(&body)
+			if !body.Approve {
+				http.Error(w, fmt.Sprintf(`{"error":"approval required","plan_id":%q}`, planID), http.StatusConflict)
+				return
+			}
+		}
+
 		s.planStore.UpdateStatus(planID, action.PlanApproved)
 		s.planStore.UpdateStatus(planID, action.PlanRunning)
 
