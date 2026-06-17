@@ -6,17 +6,11 @@
 
 ## 架构
 
-```
-AI Client (Claude Code)
-    │  MCP (stdio JSON-RPC)
-    ▼
-MCP Server (Node.js)          ← 13 个 MCP tools
-    │  HTTP + shared secret
-    ▼
-Server Agent (Go)             ← systemd service, 运行在 Ubuntu 上
-    │  D-Bus / Docker socket / /proc
-    ▼
-真实 Linux 服务器
+```mermaid
+flowchart LR
+    A["AI Client\n(Claude Code)"] -->|"MCP stdio JSON-RPC"| B["MCP Server\n(Node.js)\n17 个 MCP tools"]
+    B -->|"HTTP + shared secret"| C["Server Agent\n(Go binary)\nsystemd service"]
+    C -->|"D-Bus / Docker socket / /proc"| D["Linux 服务器\n(Ubuntu 22.04+)"]
 ```
 
 ## 快速开始
@@ -24,16 +18,16 @@ Server Agent (Go)             ← systemd service, 运行在 Ubuntu 上
 ### 1. 在目标服务器安装 Agent
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ai-sre/agent/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Ye-Yu-Mo/AI-SRE-Agent/main/agent/install.sh | sh
 ```
 
-Agent 将以 systemd service 运行在 `9090` 端口。安装完成后记录生成的 `AGENT_SECRET`。
+安装完成后终端会打印 `AGENT_SECRET`，复制备用。Agent 以 systemd service 运行在 `9090` 端口。
 
-### 2. 本地启动 MCP Server
+### 2. 本地安装 MCP Server
 
 ```bash
-git clone https://github.com/ai-sre/agent.git
-cd agent/mcp-server
+git clone https://github.com/Ye-Yu-Mo/AI-SRE-Agent.git
+cd AI-SRE-Agent/mcp-server
 npm install && npm run build
 ```
 
@@ -45,53 +39,61 @@ npm install && npm run build
 {
   "mcpServers": {
     "ai-server-agent": {
-      "command": "/path/to/mcp-server/run.sh",
+      "command": "/path/to/AI-SRE-Agent/mcp-server/run.sh",
       "args": [],
       "env": {
-        "AGENT_ENDPOINT": "http://<你的服务器IP>:9090",
-        "AGENT_SECRET": "<安装时生成的secret>"
+        "AGENT_ENDPOINT": "http://<服务器IP>:9090",
+        "AGENT_SECRET": "<安装时打印的secret>"
       }
     }
   }
 }
 ```
 
-重启 Claude Code，即可在会话中使用 MCP tools。
+重启 Claude Code 即可使用。
 
-## MCP Tools
+## MCP Tools（17 个）
 
-### Read — 查看状态
+### 服务器状态（只读）
 | Tool | 功能 |
 |------|------|
 | `server.inspect` | CPU/Mem/Disk/OS/Kernel/Arch/Ports |
-| `server.health` | 健康检查 + 告警 |
-| `server.resources` | 详细资源数值 |
-| `service.list` | systemd 服务列表 |
-| `service.logs` | journal 日志 |
+| `server.health` | 健康检查 + 告警列表 |
+| `server.resources` | 详细资源数值（百分比） |
+| `server.graph` | 应用/容器/端口/反向代理拓扑依赖图 |
 
-### Write — 执行写操作
+### systemd 服务
 | Tool | 功能 |
 |------|------|
+| `service.list` | 列出所有 systemd 服务及状态 |
+| `service.logs` | journal 日志（最近 N 行） |
 | `service.plan_restart` | 生成重启计划（不直接执行） |
-| `plan.apply` | 执行计划 |
 
-### Audit — 审计
+### Docker 容器
 | Tool | 功能 |
 |------|------|
+| `docker.list` | 列出所有容器及状态 |
+| `docker.logs` | 容器日志（最近 N 行） |
+| `docker.plan_restart` | 生成容器重启计划 |
+
+### 执行 & 审计
+| Tool | 功能 |
+|------|------|
+| `plan.apply` | 执行已审批的计划 |
 | `audit.search` | 查询操作审计日志 |
 
-### Deploy — 部署
+### 部署管理
 | Tool | 功能 |
 |------|------|
-| `app.plan_deploy` | 生成部署计划 |
-| `app.apply_deploy` | 执行部署（clone → build → up → healthcheck → release） |
-| `app.status` | 查看应用状态和 release 信息 |
+| `app.plan_deploy` | 生成部署计划（检测运行时、评估风险） |
+| `app.apply_deploy` | 执行部署：clone → build → up → healthcheck → release |
+| `app.status` | 查看应用状态和当前 release 信息 |
 | `app.rollback` | 回滚到上一版本 |
 
-### Diagnosis — 诊断
+### 故障诊断
 | Tool | 功能 |
 |------|------|
-| `diagnose.website` | 诊断网站不可访问原因 |
+| `diagnose.website` | 诊断网站不可访问（端口/容器/代理） |
 
 ## 安全原则
 
@@ -99,46 +101,44 @@ npm install && npm run build
 |------|------|
 | 不暴露 root shell | AI 只能调用 typed action，不能执行任意命令 |
 | Plan/Apply 分离 | 有副作用的操作先生成计划，审批后执行 |
-| 默认最小权限 | 每个 session 只获得完成任务所需的最小 capability |
-| 所有操作可审计 | 每次写操作记录 before/after state、stdout/stderr |
-| 部署可回滚 | 每次部署创建 release record，失败自动回滚 |
-| 命令沙箱 | 危险命令（rm -rf /、mkfs、passwd 等）默认拒绝 |
+| 风险分级 | 硬编码分级表：low / medium / high / critical |
+| 命令沙箱 | 27 个危险命令（`rm -rf /`、`mkfs`、`passwd` 等）默认拒绝 |
+| 全量审计 | 每次写操作记录 before/after state、stdout/stderr |
+| 部署可回滚 | 每次部署创建 release record，失败可一键回滚 |
 
 ## 项目结构
 
 ```
 ├── agent/                  # Go Agent — 运行在目标服务器
-│   ├── cmd/agent/          # CLI 入口 (ai-server-agent serve)
+│   ├── cmd/agent/          # 入口：ai-server-agent serve
 │   ├── internal/
 │   │   ├── action/         # Typed Action 模型 + Plan 状态机
-│   │   ├── collector/      # /proc, systemd, Docker 状态采集
-│   │   ├── deploy/         # 部署流水线 (clone, compose, healthcheck, release, rollback)
+│   │   ├── collector/      # /proc、systemd、Docker 状态采集
+│   │   ├── deploy/         # 部署流水线（clone/compose/healthcheck/release/rollback）
 │   │   ├── executor/       # Typed Executor + 命令沙箱
+│   │   ├── graph/          # State Graph 拓扑采集
 │   │   ├── identity/       # Server identity 生成
 │   │   ├── plan/           # Plan 内存存储
 │   │   ├── risk/           # 硬编码风险分级表
-│   │   ├── service/        # Systemd unit 模板
-│   │   └── storage/        # 本地 JSON 文件存储 (audit + snapshots)
+│   │   └── storage/        # JSON 文件持久化（audit + releases）
 │   ├── install.sh          # 一行安装脚本
 │   └── uninstall.sh        # 卸载脚本
 ├── mcp-server/             # MCP Server — AI 交互层
 │   └── src/
-│       ├── index.ts        # 13 个 MCP tool 注册
+│       ├── index.ts        # 17 个 MCP tool 注册
 │       ├── client/agent.ts # Agent HTTP client
 │       └── tools/server.ts # Tool handlers
 ├── .mcp.json               # Claude Code MCP 配置示例
 ├── PLAN.md                 # 里程碑计划
-├── MCP-DEV.md              # MCP 开发指南
-├── test_project/           # 集成测试
-└── README.md
+└── CHANGELOG.md
 ```
 
 ## 技术栈
 
 | 组件 | 技术 |
 |------|------|
-| Agent | Go, 单一静态二进制 (~8MB) |
-| MCP Server | TypeScript, @modelcontextprotocol/sdk |
-| Agent 存储 | JSON 文件 (Phase 0) |
-| 部署 | systemd service + docker-compose |
-| 传输 | Agent ↔ MCP Server: HTTP + shared secret |
+| Agent | Go，单一静态二进制（~8MB），无外部运行时依赖 |
+| MCP Server | TypeScript，@modelcontextprotocol/sdk |
+| 持久化 | JSON 文件（audit.jsonl + releases.jsonl） |
+| 部署 | systemd service + Docker Compose v2 |
+| 传输 | HTTP + shared secret |
