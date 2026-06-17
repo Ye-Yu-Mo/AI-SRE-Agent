@@ -16,6 +16,19 @@ export function getConfig(): Readonly<Config> {
   return config;
 }
 
+// AgentError 携带 HTTP status，让上层区分 409（需审批）和真错误。
+// message 保持 `Agent API error: <status> <body>` 格式，向后兼容现有断言。
+export class AgentError extends Error {
+  status: number;
+  body: string;
+  constructor(status: number, body: string) {
+    super(`Agent API error: ${status} ${body}`);
+    this.name = "AgentError";
+    this.status = status;
+    this.body = body;
+  }
+}
+
 export class AgentClient {
   private get base(): string {
     return config.endpoint;
@@ -43,7 +56,7 @@ export class AgentClient {
 
     if (!res.ok) {
       const body = await res.text().catch(() => "");
-      throw new Error(`Agent API error: ${res.status} ${body}`);
+      throw new AgentError(res.status, body);
     }
     return res.json();
   }
@@ -64,7 +77,7 @@ export class AgentClient {
 
     if (!res.ok) {
       const text = await res.text().catch(() => "");
-      throw new Error(`Agent API error: ${res.status} ${text}`);
+      throw new AgentError(res.status, text);
     }
     return res.json();
   }

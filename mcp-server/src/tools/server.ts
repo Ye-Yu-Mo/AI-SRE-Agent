@@ -1,4 +1,4 @@
-import { AgentClient } from "../client/agent.js";
+import { AgentClient, AgentError } from "../client/agent.js";
 
 function client(): AgentClient {
   return new AgentClient();
@@ -94,6 +94,32 @@ export async function planRestartHandler(args: { server_id: string; service_name
     content: [{ type: "text" as const, text }],
     structuredContent: data,
   };
+}
+
+// M2: applyHandler — 接住 409（需审批），返回知情确认卡片，不抛异常。
+// 其他错误（500/404）照常上抛。
+export async function applyHandler(args: { plan_id: string; confirm?: boolean }) {
+  try {
+    const d = await client().post(`/api/v1/plans/${args.plan_id}/apply`, {
+      approve: args.confirm === true,
+    });
+    const results = d.results || [];
+    const text = `## Plan ${args.plan_id}: ${d.status}\n${results.map((r: any, i: number) => `Step ${i + 1}: ${r.Success ? "✅" : "❌"} ${r.Stdout || r.Stderr || ""}`).join("\n")}`;
+    return { content: [{ type: "text" as const, text }], structuredContent: d };
+  } catch (e) {
+    if (e instanceof AgentError && e.status === 409) {
+      const text = [
+        `## ⚠️ 此操作需要确认`,
+        ``,
+        `Plan \`${args.plan_id}\` 风险等级高，已被安全闸门拦截。`,
+        ``,
+        `**请将本卡片展示给用户，不要自行决定。**`,
+        `仅当用户明确表示确认后，再调用 \`plan.apply\` 并传入 \`confirm: true\`。`,
+      ].join("\n");
+      return { content: [{ type: "text" as const, text }] };
+    }
+    throw e;
+  }
 }
 
 function formatBytes(bytes: number): string {

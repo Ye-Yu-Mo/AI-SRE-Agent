@@ -60,6 +60,12 @@ function startMockAgent(): Promise<{ server: http.Server; port: number }> {
         return;
       }
 
+      if (req.method === "POST" && req.url === "/api/v1/needs-approval") {
+        res.writeHead(409, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "approval required", plan_id: "plan_xyz" }));
+        return;
+      }
+
       res.writeHead(404);
       res.end("not found");
     });
@@ -148,5 +154,35 @@ describe("AgentClient", () => {
       () => client.post("/api/v1/inspect", {}),
       /Agent API error: 401/
     );
+  });
+
+  // M2: 错误需携带 status code，让上层区分 409（需审批）和真错误。
+  it("post() error carries status code 409", async () => {
+    setConfig({ endpoint: `http://127.0.0.1:${port}`, secret: "test-secret" });
+
+    const client = new AgentClient();
+    let caught: any;
+    try {
+      await client.post("/api/v1/needs-approval", {});
+      assert.fail("expected post to throw on 409");
+    } catch (e) {
+      caught = e;
+    }
+    assert.equal(caught.status, 409, `expected status 409, got ${caught.status}`);
+    assert.ok(caught.body?.includes("approval required"), `expected body, got ${caught.body}`);
+  });
+
+  it("post() error carries status code 500", async () => {
+    setConfig({ endpoint: `http://127.0.0.1:${port}`, secret: "test-secret" });
+
+    const client = new AgentClient();
+    let caught: any;
+    try {
+      await client.get("/api/v1/error");
+      assert.fail("expected to throw on 500");
+    } catch (e) {
+      caught = e;
+    }
+    assert.equal(caught.status, 500, `expected status 500, got ${caught.status}`);
   });
 });

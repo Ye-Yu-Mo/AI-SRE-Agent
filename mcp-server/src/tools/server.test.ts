@@ -70,6 +70,24 @@ function startMockAgent(): Promise<{ server: http.Server; port: number }> {
         return;
       }
 
+      // apply: plan_high requires approval (409), plan_low succeeds (200)
+      if (req.method === "POST" && req.url?.startsWith("/api/v1/plans/")) {
+        let body = "";
+        req.on("data", (d) => (body += d));
+        req.on("end", () => {
+          const parsed = JSON.parse(body || "{}");
+          const planId = req.url!.split("/")[4];
+          if (planId === "plan_high" && !parsed.approve) {
+            res.writeHead(409, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "approval required", plan_id: planId }));
+          } else {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ plan_id: planId, status: "succeeded", results: [] }));
+          }
+        });
+        return;
+      }
+
       res.writeHead(404);
       res.end("not found");
     });
@@ -139,5 +157,51 @@ describe("Tool handlers — output format", () => {
       () => inspectHandler({ server_id: "srv_01" }),
       /Agent API error/
     );
+  });
+});
+
+describe("plan.apply — approval gate", () => {
+  let server: http.Server;
+  let port: number;
+
+  before(async () => {
+    const mock = await startMockAgent();
+    server = mock.server;
+    port = mock.port;
+    setConfig({ endpoint: `http://127.0.0.1:${port}`, secret: "test-secret" });
+  });
+
+  after(() => {
+    server.close();
+  });
+
+  // M2: 撞 409 不抛异常，返回知情确认卡片，且指示 AI 停下问用户。
+  it("returns confirmation card on 409, does not throw", async () => {
+    setConfig({ endpoint: `http://127.0.0.1:${port}`, secret: "test-secret" });
+    const { applyHandler } = await import("./server.js");
+
+    const result = await applyHandler({ plan_id: "plan_high" });
+    const text = result.content[0].text;
+    assert.ok(text.includes("plan_high"), `expected plan_id in card: ${text}`);
+    // 卡片必须包含"需确认/确认"语义，且不能是裸异常
+    assert.ok(/确认|approval|confirm/i.test(text), `expected approval wording: ${text}`);
+  });
+
+  // M2: confirm=true → 转发 approve，正常执行不再 409。
+  it("with confirm=true passes the gate", async () => {
+    setConfig({ endpoint: `http://127.0.0.1:${port}`, secret: "test-secret" });
+    const { applyHandler } = await import("./server.js");
+
+    const result = await applyHandler({ plan_id: "plan_high", confirm: true });
+    const text = result.content[0].text;
+    assert.ok(text.includes("succeeded"), `expected success: ${text}`);
+  });
+
+  // M2: 真错误（500）不被 409 分支吞掉，照常抛出。
+  it("rethrows non-409 errors", async () => {
+    setConfig({ endpoint: "http://127.0.0.1:19999", secret: "bad" });
+    const { applyHandler } = await import("./server.js");
+
+    await assert.rejects(() => applyHandler({ plan_id: "plan_x" }), /Agent API error/);
   });
 });

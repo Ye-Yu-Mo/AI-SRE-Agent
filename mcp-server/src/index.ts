@@ -7,6 +7,7 @@ import {
   healthHandler,
   resourcesHandler,
   planRestartHandler,
+  applyHandler,
 } from "./tools/server.js";
 
 const server = new McpServer({ name: "ai-server-agent", version: "1.0.0" });
@@ -105,14 +106,12 @@ server.registerTool("service.plan_restart", {
 }, planRestartHandler);
 
 server.registerTool("plan.apply", {
-  description: "执行已创建的操作计划。传入 plan_id 执行对应操作。",
-  inputSchema: { plan_id: z.string().describe("plan ID，从 service.plan_restart 等返回") },
-}, async (args) => {
-  const d = await client().post(`/api/v1/plans/${args.plan_id}/apply`, {});
-  const results = d.results || [];
-  const text = `## Plan ${args.plan_id}: ${d.status}\n${results.map((r: any, i: number) => `Step ${i + 1}: ${r.Success ? "✅" : "❌"} ${r.Stdout || r.Stderr || ""}`).join("\n")}`;
-  return { content: [{ type: "text", text }], structuredContent: d };
-});
+  description: "执行已创建的操作计划。高风险操作首次调用会返回需确认卡片——必须先把卡片展示给用户、获得明确确认后，才能带 confirm=true 重试。不得在用户未确认时自行带 confirm。",
+  inputSchema: {
+    plan_id: z.string().describe("plan ID，从 service.plan_restart 等返回"),
+    confirm: z.boolean().optional().describe("用户已明确确认高风险操作时传 true"),
+  },
+}, applyHandler);
 
 // ── Audit ──
 
