@@ -99,6 +99,46 @@ function startMockAgent(): Promise<{ server: http.Server; port: number }> {
   });
 }
 
+// Mock agent: POST /api/v1/deploy/apply without force → 409 with risks
+//                                                with force:true → 200 succeeded
+function startMockDeployAgent(): Promise<{ server: http.Server; port: number }> {
+  return new Promise((resolve) => {
+    const server = http.createServer((req, res) => {
+      if (req.method === "POST" && req.url === "/api/v1/deploy/apply") {
+        let body = "";
+        req.on("data", (d) => (body += d));
+        req.on("end", () => {
+          const parsed = JSON.parse(body || "{}");
+          if (!parsed.force) {
+            res.writeHead(409, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({
+              error: "supply chain risks detected",
+              risks: ["privileged container detected"],
+              hint: "re-deploy with force:true after reviewing risks",
+            }));
+          } else {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({
+              status: "succeeded",
+              app_name: "x-risky-app",
+              release_id: "rel_abc",
+              runtime: "docker_compose",
+              healthcheck: { status: "passing", latency_ms: 42, status_code: 200 },
+            }));
+          }
+        });
+        return;
+      }
+      res.writeHead(404);
+      res.end("not found");
+    });
+    server.listen(0, "127.0.0.1", () => {
+      const addr = server.address() as { port: number };
+      resolve({ server, port: addr.port });
+    });
+  });
+}
+
 describe("Tool handlers — output format", () => {
   let server: http.Server;
   let port: number;
@@ -155,6 +195,44 @@ describe("Tool handlers — output format", () => {
 
     await assert.rejects(
       () => inspectHandler({ server_id: "srv_01" }),
+      /Agent API error/
+    );
+  });
+});
+
+describe("app.apply_deploy — supply chain risk gate", () => {
+  let server: http.Server;
+  let port: number;
+
+  before(async () => {
+    const mock = await startMockDeployAgent();
+    server = mock.server;
+    port = mock.port;
+    setConfig({ endpoint: `http://127.0.0.1:${port}`, secret: "test-secret" });
+  });
+
+  after(() => { server.close(); });
+
+  it("returns risk card on 409, does not throw", async () => {
+    const { applyDeployHandler } = await import("./server.js");
+    const result = await applyDeployHandler({ repo_url: "https://github.com/x/risky-app" });
+    const text = result.content[0].text;
+    assert.ok(/risk|危险|confirm/i.test(text), `expected risk wording: ${text}`);
+    assert.ok(text.includes("privileged"), `expected risk details: ${text}`);
+  });
+
+  it("with confirm=true passes force:true to agent", async () => {
+    const { applyDeployHandler } = await import("./server.js");
+    const result = await applyDeployHandler({ repo_url: "https://github.com/x/risky-app", confirm: true });
+    const text = result.content[0].text;
+    assert.ok(text.includes("succeeded"), `expected success: ${text}`);
+  });
+
+  it("non-409 errors still throw", async () => {
+    setConfig({ endpoint: "http://127.0.0.1:19999", secret: "bad" });
+    const { applyDeployHandler } = await import("./server.js");
+    await assert.rejects(
+      () => applyDeployHandler({ repo_url: "https://github.com/x/app" }),
       /Agent API error/
     );
   });

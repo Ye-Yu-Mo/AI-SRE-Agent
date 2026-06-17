@@ -86,7 +86,7 @@ npm install && npm run build
 | Tool | 功能 |
 |------|------|
 | `app.plan_deploy` | 生成部署计划（检测运行时、评估风险） |
-| `app.apply_deploy` | 执行部署：clone → build → up → healthcheck → release（反向代理/域名配置规划中） |
+| `app.apply_deploy` | 执行部署：clone → build → up → healthcheck → release。危险 compose 配置（privileged/docker.sock/root mount）触发 409 风险卡片，需用户确认后带 `confirm=true` 重试（反向代理/域名配置规划中） |
 | `app.status` | 查看应用状态和当前 release 信息 |
 | `app.rollback` | 回滚到上一版本 |
 
@@ -103,6 +103,7 @@ npm install && npm run build
 | Plan/Apply 分离 | 有副作用的操作先生成计划，审批后执行 |
 | 风险分级 | typed action 硬编码分级：critical 直接拒绝，high 需显式审批 |
 | 危险操作拒绝 | 停止生产数据库等不可逆操作判 critical，在 plan 创建阶段拦截 |
+| Supply chain 拦截 | 部署前扫描 compose：privileged/docker.sock/root mount/host network 触发 409，需用户确认才放行 |
 | 全量审计 | 每次写操作记录 before/after state、stdout/stderr |
 | 部署可回滚 | 每次部署创建 release record，失败可一键回滚 |
 

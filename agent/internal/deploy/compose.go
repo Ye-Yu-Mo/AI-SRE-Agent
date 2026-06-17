@@ -37,7 +37,7 @@ func ValidateCompose(dir, composeFile string) ComposeValidateResult {
 	}
 
 	return ComposeValidateResult{
-		Valid: true, // 有风险但不阻止部署，只标记
+		Valid: len(risks) == 0,
 		Risks: risks,
 	}
 }

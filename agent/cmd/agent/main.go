@@ -592,6 +592,7 @@ func (s *server) handleDeployApply(w http.ResponseWriter, r *http.Request) {
 		Branch   string `json:"branch"`
 		Domain   string `json:"domain"`
 		AppName  string `json:"app_name"`
+		Force    bool   `json:"force"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"invalid JSON"}`, 400)
@@ -638,11 +639,17 @@ func (s *server) handleDeployApply(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Step 3: validate
+	// Step 3: validate — 危险配置必须显式确认才能继续
 	validate := deploy.ValidateCompose(workDir, composeFile)
-	if len(validate.Risks) > 0 {
-		// 有风险但仍然继续
-		log.Printf("deploy risks for %s: %v", appName, validate.Risks)
+	if !validate.Valid && !req.Force {
+		risksJSON, _ := json.Marshal(validate.Risks)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		fmt.Fprintf(w, `{"error":"supply chain risks detected","risks":%s,"hint":"re-deploy with force:true after reviewing risks"}`, risksJSON)
+		return
+	}
+	if !validate.Valid && req.Force {
+		log.Printf("deploy %s: force-confirmed supply chain risks: %v", appName, validate.Risks)
 	}
 
 	// Step 4: build

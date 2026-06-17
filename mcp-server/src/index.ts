@@ -8,6 +8,7 @@ import {
   resourcesHandler,
   planRestartHandler,
   applyHandler,
+  applyDeployHandler,
 } from "./tools/server.js";
 
 const server = new McpServer({ name: "ai-server-agent", version: "1.0.0" });
@@ -153,22 +154,15 @@ server.registerTool("app.plan_deploy", {
 });
 
 server.registerTool("app.apply_deploy", {
-  description: "执行部署计划。将 repo 克隆、构建、启动容器、运行健康检查、创建 release。",
+  description: "执行部署：clone → build → up → healthcheck → release（反向代理/域名配置规划中）。高风险 compose 配置（privileged/docker.sock/root mount）首次调用会返回风险拦截卡片——必须先把卡片展示给用户、获得明确确认后，才能带 confirm=true 重试。不得在用户未确认时自行带 confirm。",
   inputSchema: {
     plan_id: z.string().optional().describe("plan ID"),
     repo_url: z.string().describe("GitHub repo URL"),
     branch: z.string().optional().describe("分支"),
     app_name: z.string().optional().describe("应用名称"),
+    confirm: z.boolean().optional().describe("用户已审阅 supply chain 风险并明确确认时传 true"),
   },
-}, async (args) => {
-  const d = await client().post("/api/v1/deploy/apply", {
-    plan_id: args.plan_id || "plan", repo_url: args.repo_url,
-    branch: args.branch || "main", app_name: args.app_name || "",
-  });
-  const hc = d.healthcheck || {};
-  const text = `## Deploy: ${d.status}\n| Field | Value |\n|-------|-------|\n| App | ${d.app_name} |\n| Release | ${d.release_id || "-"} |\n| Runtime | ${d.runtime || "-"} |\n| Healthcheck | ${hc.status || "-"} (${hc.latency_ms || 0}ms, HTTP ${hc.status_code || "-"}) |\n${d.error ? `| Error | ${d.error} |` : ""}`;
-  return { content: [{ type: "text", text }], structuredContent: d };
-});
+}, applyDeployHandler);
 
 server.registerTool("app.status", {
   description: "查询已部署应用的状态和当前 release 信息。",

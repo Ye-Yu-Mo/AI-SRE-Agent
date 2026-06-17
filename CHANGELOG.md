@@ -1,5 +1,35 @@
 # Changelog
 
+变更记录
+
+格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)
+
+版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)
+
+---
+
+## 版本号说明
+
+- **主版本号（Major）**：不兼容的 API 变更或架构重构
+- **次版本号（Minor）**：向后兼容的功能新增（新模块、新页面、新接口）
+- **修订号（Patch）**：向后兼容的问题修正、小优化、文档更新
+
+---
+
+## v0.2.0 — 2026-06-17
+
+### 修复
+
+- **Supply chain 拦截**: `ValidateCompose` 检出危险配置（privileged/docker.sock/root mount/host network）返回 `Valid:false`，`handleDeployApply` 在未确认时返回 409，不再静默继续部署
+- **部署审批闸门**: `app.apply_deploy` MCP tool 新增 `confirm` 参数，撞 409 时返回风险卡片，与 `plan.apply` 保持一致的审批协议
+- **applyDeployHandler 提取**: 从 `index.ts` 内联逻辑提取为 `server.ts` 导出函数，补充单元测试覆盖
+
+### 修正
+
+- **CHANGELOG**: 删除对已不存在的"命令沙箱"（sandbox.go 在 M1 已删除）的虚假记录
+
+---
+
 ## v0.1.0 — 2026-06-17
 
 ### 新增
