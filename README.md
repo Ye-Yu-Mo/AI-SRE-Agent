@@ -8,9 +8,9 @@
 
 ```mermaid
 flowchart LR
-    A["AI Client\n(Claude Code)"] -->|"MCP stdio JSON-RPC"| B["MCP Server\n(Node.js)\n17 个 MCP tools"]
-    B -->|"HTTP + shared secret"| C["Server Agent\n(Go binary)\nsystemd service"]
-    C -->|"D-Bus / Docker socket / /proc"| D["Linux 服务器\n(Ubuntu 22.04+)"]
+    A["AI Client<br/>(Claude Code)"] -->|"MCP stdio JSON-RPC"| B["MCP Server<br/>(Node.js)<br/>17 个 MCP tools"]
+    B -->|"HTTP + shared secret"| C["Server Agent<br/>(Go binary)<br/>systemd service"]
+    C -->|"D-Bus / Docker socket / /proc"| D["Linux 服务器<br/>(Ubuntu 22.04+)"]
 ```
 
 ## 快速开始
