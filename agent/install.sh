@@ -1,9 +1,10 @@
 #!/bin/sh
 set -eu
 
-# AI Server Agent — install script
-# curl -fsSL https://install.example.com/agent.sh | sh
+# AI Server Agent — One-line install
+# curl -fsSL https://raw.githubusercontent.com/Ye-Yu-Mo/AI-SRE-Agent/main/agent/install.sh | sh
 
+BIN_URL="${AGENT_DOWNLOAD_URL:-https://github.com/Ye-Yu-Mo/AI-SRE-Agent/releases/latest/download/ai-server-agent}"
 AGENT_USER="ai-server-agent"
 BIN_DIR="/usr/local/bin"
 BIN_PATH="${BIN_DIR}/ai-server-agent"
@@ -14,49 +15,53 @@ SERVICE_FILE="/etc/systemd/system/ai-server-agent.service"
 PORT="${AGENT_PORT:-9090}"
 
 echo "=== AI Server Agent Install ==="
-echo ""
 
-# 1. Create user if not exists
-if ! id -u "${AGENT_USER}" >/dev/null 2>&1; then
-    echo "Creating user ${AGENT_USER}..."
-    useradd --system --no-create-home --shell /usr/sbin/nologin "${AGENT_USER}"
-else
-    echo "User ${AGENT_USER} already exists."
-fi
+# 1. Create system user
+id -u "${AGENT_USER}" >/dev/null 2>&1 || \
+  useradd --system --no-create-home --shell /usr/sbin/nologin "${AGENT_USER}"
 
 # 2. Create directories
-echo "Creating directories..."
 mkdir -p "${DATA_DIR}" "${CONF_DIR}" "${LOG_DIR}"
 chown "${AGENT_USER}:${AGENT_USER}" "${DATA_DIR}" "${LOG_DIR}"
 chmod 750 "${DATA_DIR}" "${CONF_DIR}" "${LOG_DIR}"
 
-# 3. Install binary
-echo "Installing binary..."
-cp "${AGENT_BINARY:-./ai-server-agent}" "${BIN_PATH}"
+# 3. Download or copy binary
+if [ -f "${AGENT_BINARY:-}" ]; then
+  echo "Using local binary: ${AGENT_BINARY}"
+  cp "${AGENT_BINARY}" "${BIN_PATH}"
+elif command -v curl >/dev/null 2>&1; then
+  echo "Downloading binary..."
+  curl -fsSL "${BIN_URL}" -o "${BIN_PATH}" || {
+    echo "ERROR: Download failed. Set AGENT_BINARY=/path/to/binary for local install."
+    exit 1
+  }
+else
+  echo "ERROR: curl not found and no local binary provided."
+  echo "Set AGENT_BINARY=/path/to/ai-server-agent for local install."
+  exit 1
+fi
 chmod 755 "${BIN_PATH}"
 
-# 4. Generate shared secret and write env file
+# 4. Generate secret
 if [ -z "${AGENT_SECRET:-}" ]; then
-    AGENT_SECRET=$(head -c 32 /dev/urandom | base64 | tr -d '=+/')
-    echo "Generated secret: ${AGENT_SECRET}"
-    echo "Store this securely, you will need it to connect MCP Server."
+  AGENT_SECRET=$(head -c 32 /dev/urandom 2>/dev/null | base64 | tr -d '=+/' || \
+    dd if=/dev/urandom bs=32 count=1 2>/dev/null | base64 | tr -d '=+/')
+  echo "Generated AGENT_SECRET: ${AGENT_SECRET}"
 fi
-cat > "${CONF_DIR}/env" <<ENV
+
+cat > "${CONF_DIR}/env" <<EOF
 AGENT_SECRET=${AGENT_SECRET}
 AGENT_PORT=${PORT}
 AGENT_DATA_DIR=${DATA_DIR}
-ENV
+EOF
 chmod 600 "${CONF_DIR}/env"
 chown "${AGENT_USER}:${AGENT_USER}" "${CONF_DIR}/env"
 
-# 5. Write systemd unit
-echo "Installing systemd service..."
+# 5. Systemd service
 cat > "${SERVICE_FILE}" <<UNIT
 [Unit]
 Description=AI Server Agent
-Documentation=https://github.com/ai-sre/agent
-After=network.target
-
+After=network.target docker.service
 [Service]
 Type=simple
 User=${AGENT_USER}
@@ -69,32 +74,27 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=${DATA_DIR} ${LOG_DIR}
-PrivateTmp=true
-
 [Install]
 WantedBy=multi-user.target
 UNIT
 
-# 6. Enable and start
+# 6. Start
 systemctl daemon-reload
-systemctl enable ai-server-agent
-systemctl start ai-server-agent
-
-# 7. Verify
+systemctl enable --now ai-server-agent
 sleep 2
+
 if systemctl is-active --quiet ai-server-agent; then
-    echo ""
-    echo "=== Done ==="
-    echo "Agent is running. Check status:"
-    echo "  systemctl status ai-server-agent"
-    echo ""
-    echo "Data dir:  ${DATA_DIR}"
-    echo "Config:    ${CONF_DIR}"
-    echo "Logs:      journalctl -u ai-server-agent"
+  echo ""
+  echo "=== Done ==="
+  echo "Agent running on port ${PORT}"
+  echo "AGENT_SECRET: ${AGENT_SECRET}"
+  echo ""
+  echo "Config this secret in your .mcp.json env:"
+  echo "  AGENT_SECRET=${AGENT_SECRET}"
+  echo ""
+  echo "Check: systemctl status ai-server-agent"
+  echo "Logs:  journalctl -u ai-server-agent -f"
 else
-    echo ""
-    echo "ERROR: Agent failed to start. Check:"
-    echo "  systemctl status ai-server-agent"
-    echo "  journalctl -u ai-server-agent"
-    exit 1
+  echo "ERROR: Agent failed to start. Check: systemctl status ai-server-agent"
+  exit 1
 fi

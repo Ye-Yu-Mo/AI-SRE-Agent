@@ -23,6 +23,7 @@ import (
 	"github.com/ai-sre/agent/internal/collector"
 	"github.com/ai-sre/agent/internal/deploy"
 	"github.com/ai-sre/agent/internal/executor"
+	"github.com/ai-sre/agent/internal/graph"
 	"github.com/ai-sre/agent/internal/identity"
 	"github.com/ai-sre/agent/internal/plan"
 	"github.com/ai-sre/agent/internal/risk"
@@ -177,6 +178,9 @@ func newServer(cfg *Config, planStore *plan.Store, auditStore *storage.Store, de
 	apiMux.HandleFunc("/api/v1/deploy/apply", func(w http.ResponseWriter, r *http.Request) {
 		s.handleDeployApply(w, r)
 	})
+	apiMux.HandleFunc("/api/v1/graph", func(w http.ResponseWriter, r *http.Request) {
+		s.handleGraph(w)
+	})
 	apiMux.HandleFunc("/api/v1/apps/", func(w http.ResponseWriter, r *http.Request) {
 		s.handleApp(w, r)
 	})
@@ -298,6 +302,11 @@ func (s *server) handleDockerLogs(w http.ResponseWriter, r *http.Request) {
 		logs = []string{}
 	}
 	jsonOK(w, map[string]interface{}{"container": name, "lines": logs, "total": len(logs)})
+}
+
+func (s *server) handleGraph(w http.ResponseWriter) {
+	g := graph.Build()
+	jsonOK(w, g)
 }
 
 func (s *server) execFor(atype action.ActionType) (executorInterface, error) {

@@ -213,6 +213,31 @@ server.registerTool("diagnose.website", {
   return { content: [{ type: "text", text: `## Diagnose: ${args.domain || args.server_id}:${port}\n${reports.join("\n")}` }] };
 });
 
+// ── Graph ──
+
+server.registerTool("server.graph", {
+  description: "查看服务器 State Graph — 应用/容器/端口/反向代理的拓扑依赖关系。用于理解'谁依赖谁'、'哪个组件坏了会影响什么'。",
+  inputSchema: { server_id: z.string().describe("目标服务器 ID") },
+}, async (args) => {
+  const g = await client().get("/api/v1/graph");
+  const nodes = g.nodes || [];
+  const edges = g.edges || [];
+  const text = [
+    `## State Graph`,
+    ``,
+    `### Nodes (${nodes.length})`,
+    `| ID | Kind | Name | Status |`,
+    `|----|------|------|--------|`,
+    ...nodes.map((n: any) => `| ${n.id} | ${n.kind} | ${n.name} | ${n.status || "-"} |`),
+    ``,
+    `### Edges (${edges.length})`,
+    `| From | Type | To |`,
+    `|------|------|----|`,
+    ...edges.map((e: any) => `| ${e.from} | ${e.type} | ${e.to} |`),
+  ].join("\n");
+  return { content: [{ type: "text" as const, text }], structuredContent: g };
+});
+
 // ── Start ──
 
 async function main() {

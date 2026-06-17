@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -52,7 +53,7 @@ func HTTPHealthCheck(url string, expectedStatus int, timeout time.Duration) Heal
 
 // TCPHealthCheck 拨号检查端口可达
 func TCPHealthCheck(host string, port int, timeout time.Duration) HealthResult {
-	addr := fmt.Sprintf("%s:%d", host, port)
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	start := time.Now()
 
 	conn, err := net.DialTimeout("tcp", addr, timeout)

@@ -8,45 +8,31 @@ CONF_DIR="/etc/ai-server-agent"
 LOG_DIR="/var/log/ai-server-agent"
 SERVICE_FILE="/etc/systemd/system/ai-server-agent.service"
 
-PURGE=false
 case "${1:-}" in
-    --purge) PURGE=true ;;
+  --purge) PURGE=true ;;
+  --force) PURGE=true ;;
+  *) PURGE=false ;;
 esac
 
 echo "=== AI Server Agent Uninstall ==="
 
-# 1. Stop and disable
-echo "Stopping service..."
 systemctl stop ai-server-agent 2>/dev/null || true
 systemctl disable ai-server-agent 2>/dev/null || true
 rm -f "${SERVICE_FILE}"
 systemctl daemon-reload
 
-# 2. Remove binary
-echo "Removing binary..."
 rm -f "${BIN_PATH}"
-
-# 3. Remove config (always, contains secret)
-echo "Removing config..."
 rm -rf "${CONF_DIR}"
-
-# 4. Remove logs
 rm -rf "${LOG_DIR}"
 
-# 5. Data — keep by default
 if [ "${PURGE}" = true ]; then
-    echo "Purging all data..."
-    rm -rf "${DATA_DIR}"
+  echo "Purging all data..."
+  rm -rf "${DATA_DIR}"
 else
-    echo "Keeping data directory: ${DATA_DIR}"
-    echo "  (use --purge to remove all data including audit log)"
+  echo "Keeping data: ${DATA_DIR}"
+  echo "  (use --purge to remove audit log and state data)"
 fi
 
-# 6. Remove user
-if id -u "${AGENT_USER}" >/dev/null 2>&1; then
-    userdel "${AGENT_USER}" 2>/dev/null || true
-    echo "Removed user ${AGENT_USER}."
-fi
+id -u "${AGENT_USER}" >/dev/null 2>&1 && userdel "${AGENT_USER}" 2>/dev/null || true
 
-echo ""
-echo "=== Done ==="
+echo "Done."
