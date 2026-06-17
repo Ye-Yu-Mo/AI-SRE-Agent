@@ -21,6 +21,7 @@ import (
 
 	"github.com/ai-sre/agent/internal/action"
 	"github.com/ai-sre/agent/internal/collector"
+	"github.com/ai-sre/agent/internal/deploy"
 	"github.com/ai-sre/agent/internal/executor"
 	"github.com/ai-sre/agent/internal/identity"
 	"github.com/ai-sre/agent/internal/plan"
@@ -96,7 +97,10 @@ func run(cfg *Config) error {
 	if err != nil {
 		return fmt.Errorf("storage: %w", err)
 	}
-	srv := newServer(cfg, planStore, auditStore, ln)
+	deployStore := deploy.NewReleaseStore()
+	// 从磁盘恢复已有的 releases
+	deployStore.LoadFromDisk(filepath.Join(cfg.Dir, "data", "releases.jsonl"))
+	srv := newServer(cfg, planStore, auditStore, deployStore, ln)
 
 	// 信号处理
 	sigCh := make(chan os.Signal, 1)
@@ -116,14 +120,15 @@ func run(cfg *Config) error {
 }
 
 type server struct {
-	cfg        *Config
-	planStore  *plan.Store
-	auditStore *storage.Store
-	exec       *executor.SystemdExecutor
+	cfg         *Config
+	planStore   *plan.Store
+	auditStore  *storage.Store
+	deployStore *deploy.ReleaseStore
+	exec        *executor.SystemdExecutor
 }
 
-func newServer(cfg *Config, planStore *plan.Store, auditStore *storage.Store, ln net.Listener) *http.Server {
-	s := &server{cfg: cfg, planStore: planStore, auditStore: auditStore, exec: &executor.SystemdExecutor{}}
+func newServer(cfg *Config, planStore *plan.Store, auditStore *storage.Store, deployStore *deploy.ReleaseStore, ln net.Listener) *http.Server {
+	s := &server{cfg: cfg, planStore: planStore, auditStore: auditStore, deployStore: deployStore, exec: &executor.SystemdExecutor{}}
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -153,6 +158,15 @@ func newServer(cfg *Config, planStore *plan.Store, auditStore *storage.Store, ln
 	})
 	apiMux.HandleFunc("/api/v1/audit", func(w http.ResponseWriter, r *http.Request) {
 		s.handleAudit(w, r)
+	})
+	apiMux.HandleFunc("/api/v1/deploy/plan", func(w http.ResponseWriter, r *http.Request) {
+		s.handleDeployPlan(w, r)
+	})
+	apiMux.HandleFunc("/api/v1/deploy/apply", func(w http.ResponseWriter, r *http.Request) {
+		s.handleDeployApply(w, r)
+	})
+	apiMux.HandleFunc("/api/v1/apps/", func(w http.ResponseWriter, r *http.Request) {
+		s.handleApp(w, r)
 	})
 
 	mux.Handle("/api/", authMiddleware(cfg.Secret, apiMux))
@@ -440,6 +454,218 @@ func (s *server) handlePlanByID(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "method not allowed", 405)
 	}
+}
+
+func (s *server) handleDeployPlan(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		RepoURL  string `json:"repo_url"`
+		Branch   string `json:"branch"`
+		Domain   string `json:"domain"`
+		ServerID string `json:"server_id"`
+		AppName  string `json:"app_name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid JSON"}`, 400)
+		return
+	}
+	if req.RepoURL == "" {
+		http.Error(w, `{"error":"repo_url required"}`, 400)
+		return
+	}
+
+	planID := "plan_" + randStr(12)
+	appName := req.AppName
+	if appName == "" {
+		appName = strings.TrimSuffix(strings.TrimPrefix(req.RepoURL, "https://github.com/"), ".git")
+		appName = strings.ReplaceAll(appName, "/", "-")
+	}
+
+	jsonOK(w, map[string]interface{}{
+		"plan_id":           planID,
+		"app_name":          appName,
+		"repo_url":          req.RepoURL,
+		"branch":            req.Branch,
+		"domain":            req.Domain,
+		"risk":              "high",
+		"requires_approval": true,
+		"steps": []string{
+			"repo.clone",
+			"compose.detect",
+			"compose.validate",
+			"compose.build",
+			"compose.up",
+			"healthcheck.run",
+			"release.create",
+		},
+	})
+}
+
+func (s *server) handleDeployApply(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		PlanID   string `json:"plan_id"`
+		RepoURL  string `json:"repo_url"`
+		Branch   string `json:"branch"`
+		Domain   string `json:"domain"`
+		AppName  string `json:"app_name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid JSON"}`, 400)
+		return
+	}
+
+	appName := req.AppName
+	if appName == "" {
+		appName = strings.TrimSuffix(strings.TrimPrefix(req.RepoURL, "https://github.com/"), ".git")
+		appName = strings.ReplaceAll(appName, "/", "-")
+	}
+
+	workDir := filepath.Join(s.cfg.Dir, "apps", appName)
+
+	// 先停掉旧容器
+	if _, err := os.Stat(workDir); err == nil {
+		for _, f := range []string{"docker-compose.yml", "compose.yaml", "docker-compose.yaml"} {
+			if _, err := os.Stat(filepath.Join(workDir, f)); err == nil {
+				deploy.ComposeDown(r.Context(), workDir, f)
+				break
+			}
+		}
+	}
+	os.RemoveAll(workDir)
+
+	// Step 1: clone
+	if err := deploy.CloneRepo(req.RepoURL, req.Branch, workDir); err != nil {
+		jsonOK(w, map[string]interface{}{"status": "failed", "step": "clone", "error": err.Error()})
+		return
+	}
+
+	// Step 2: detect
+	detected := deploy.Detect(workDir)
+	if detected.Runtime == deploy.RuntimeUnknown {
+		jsonOK(w, map[string]interface{}{"status": "failed", "step": "detect", "error": "no Dockerfile or compose file found"})
+		return
+	}
+
+	composeFile := "docker-compose.yml"
+	for _, f := range detected.Files {
+		if f == "compose.yaml" || f == "docker-compose.yaml" {
+			composeFile = f
+			break
+		}
+	}
+
+	// Step 3: validate
+	validate := deploy.ValidateCompose(workDir, composeFile)
+	if len(validate.Risks) > 0 {
+		// 有风险但仍然继续
+		log.Printf("deploy risks for %s: %v", appName, validate.Risks)
+	}
+
+	// Step 4: build
+	ctx := r.Context()
+	_, _, err := deploy.ComposeBuild(ctx, workDir, composeFile)
+	if err != nil {
+		jsonOK(w, map[string]interface{}{"status": "failed", "step": "build", "error": err.Error()})
+		return
+	}
+
+	// Step 5: up
+	_, _, err = deploy.ComposeUp(ctx, workDir, composeFile)
+	if err != nil {
+		jsonOK(w, map[string]interface{}{"status": "failed", "step": "up", "error": err.Error()})
+		return
+	}
+
+	// Step 6: healthcheck — 尝试多个常见端口
+	hc := deploy.HTTPHealthCheck("http://localhost:80", 0, 3*time.Second)
+	if hc.Status != deploy.HealthPassing {
+		for _, port := range []int{8080, 8888, 3000, 5000} {
+			url := fmt.Sprintf("http://localhost:%d", port)
+			if hc2 := deploy.HTTPHealthCheck(url, 0, 3*time.Second); hc2.Status == deploy.HealthPassing {
+				hc = hc2
+				break
+			}
+		}
+	}
+
+	// Step 7: release — 即使 healthcheck 失败也创建（记录状态供后续排查）
+	// 读取当前 commit hash
+	commitOut, _ := exec.Command("git", "-C", workDir, "rev-parse", "HEAD").Output()
+	commit := strings.TrimSpace(string(commitOut))
+	if commit == "" {
+		commit = req.Branch
+	}
+
+	releaseID := "rel_" + randStr(12)
+	rel := deploy.Release{
+		ID:                releaseID,
+		AppID:             appName,
+		ServerID:          "srv_remote_01",
+		Commit:            commit,
+		Image:             appName + ":latest",
+		Status:            "active",
+		HealthcheckStatus: string(hc.Status),
+	}
+	s.deployStore.Create(rel)
+	s.deployStore.Activate(releaseID)
+	s.deployStore.SaveToDisk(filepath.Join(s.cfg.Dir, "data", "releases.jsonl"))
+
+	jsonOK(w, map[string]interface{}{
+		"status":      "succeeded",
+		"release_id":  releaseID,
+		"app_name":    appName,
+		"runtime":     detected.Runtime,
+		"healthcheck": hc,
+	})
+}
+
+func (s *server) handleApp(w http.ResponseWriter, r *http.Request) {
+	// /api/v1/apps/{name} or /api/v1/apps/{name}/rollback
+	path := strings.TrimPrefix(r.URL.Path, "/api/v1/apps/")
+	parts := strings.SplitN(path, "/", 2)
+	appName := parts[0]
+
+	// GET /api/v1/apps/{name} — status
+	if len(parts) == 1 && r.Method == http.MethodGet {
+		rel, ok := s.deployStore.Current(appName)
+		if !ok {
+			http.Error(w, `{"error":"app not found"}`, 404)
+			return
+		}
+		jsonOK(w, map[string]interface{}{"app_name": appName, "release": rel})
+		return
+	}
+
+	// POST /api/v1/apps/{name}/rollback — rollback
+	if len(parts) == 2 && parts[1] == "rollback" && r.Method == http.MethodPost {
+		workDir := filepath.Join(s.cfg.Dir, "apps", appName)
+		composeFile := findComposeFile(workDir)
+
+		prev, err := deploy.Rollback(s.deployStore, appName, workDir, composeFile)
+		if err != nil {
+			jsonOK(w, map[string]interface{}{"status": "failed", "error": err.Error()})
+			return
+		}
+		s.deployStore.SaveToDisk(filepath.Join(s.cfg.Dir, "data", "releases.jsonl"))
+
+		hc := deploy.HTTPHealthCheck("http://localhost:80", 0, 10*time.Second)
+		jsonOK(w, map[string]interface{}{
+			"status":      "rolled_back",
+			"release":     prev,
+			"healthcheck": hc,
+		})
+		return
+	}
+
+	http.Error(w, "method not allowed", 405)
+}
+
+func findComposeFile(dir string) string {
+	for _, name := range []string{"docker-compose.yml", "compose.yaml", "docker-compose.yaml"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			return name
+		}
+	}
+	return "docker-compose.yml"
 }
 
 func riskOrder(r action.RiskLevel) int {

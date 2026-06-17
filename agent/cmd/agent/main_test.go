@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ai-sre/agent/internal/deploy"
 	"github.com/ai-sre/agent/internal/plan"
 	"github.com/ai-sre/agent/internal/storage"
 )
@@ -34,7 +35,7 @@ func TestServerStartupAndHealth(t *testing.T) {
 		Secret: "test-secret",
 	}
 	auditStore, _ := storage.NewStore(t.TempDir())
-	srv := newServer(cfg, plan.NewStore(), auditStore, ln)
+	srv := newServer(cfg, plan.NewStore(), auditStore, deploy.NewReleaseStore(), ln)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -64,7 +65,7 @@ func TestServerSecretRejection(t *testing.T) {
 		Secret: "correct-secret",
 	}
 	auditStore, _ := storage.NewStore(t.TempDir())
-	srv := newServer(cfg, plan.NewStore(), auditStore, ln)
+	srv := newServer(cfg, plan.NewStore(), auditStore, deploy.NewReleaseStore(), ln)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
