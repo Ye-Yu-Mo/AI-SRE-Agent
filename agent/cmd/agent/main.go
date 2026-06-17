@@ -124,11 +124,13 @@ type server struct {
 	planStore   *plan.Store
 	auditStore  *storage.Store
 	deployStore *deploy.ReleaseStore
-	exec        *executor.SystemdExecutor
+	sysExec     *executor.SystemdExecutor
+	dockerExec  *executor.DockerExecutor
 }
 
 func newServer(cfg *Config, planStore *plan.Store, auditStore *storage.Store, deployStore *deploy.ReleaseStore, ln net.Listener) *http.Server {
-	s := &server{cfg: cfg, planStore: planStore, auditStore: auditStore, deployStore: deployStore, exec: &executor.SystemdExecutor{}}
+	s := &server{cfg: cfg, planStore: planStore, auditStore: auditStore, deployStore: deployStore,
+		sysExec: &executor.SystemdExecutor{}, dockerExec: &executor.DockerExecutor{}}
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -158,6 +160,16 @@ func newServer(cfg *Config, planStore *plan.Store, auditStore *storage.Store, de
 	})
 	apiMux.HandleFunc("/api/v1/audit", func(w http.ResponseWriter, r *http.Request) {
 		s.handleAudit(w, r)
+	})
+	apiMux.HandleFunc("/api/v1/docker/containers", func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/logs") {
+			s.handleDockerLogs(w, r)
+		} else {
+			s.handleDockerList(w)
+		}
+	})
+	apiMux.HandleFunc("/api/v1/docker/containers/", func(w http.ResponseWriter, r *http.Request) {
+		s.handleDockerLogs(w, r)
 	})
 	apiMux.HandleFunc("/api/v1/deploy/plan", func(w http.ResponseWriter, r *http.Request) {
 		s.handleDeployPlan(w, r)
@@ -254,6 +266,52 @@ func (s *server) handleAudit(w http.ResponseWriter, r *http.Request) {
 		events = []storage.AuditEvent{}
 	}
 	jsonOK(w, map[string]interface{}{"events": events, "total": len(events)})
+}
+
+// ── Docker handlers ──
+
+func (s *server) handleDockerList(w http.ResponseWriter) {
+	containers, err := collector.DockerList()
+	if err != nil {
+		jsonOK(w, map[string]interface{}{"containers": []collector.DockerContainer{}})
+		return
+	}
+	if containers == nil {
+		containers = []collector.DockerContainer{}
+	}
+	jsonOK(w, map[string]interface{}{"containers": containers})
+}
+
+func (s *server) handleDockerLogs(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/v1/docker/containers/")
+	name := strings.TrimRight(strings.TrimSuffix(path, "/logs"), "/")
+	if name == "" {
+		http.Error(w, `{"error":"container name required"}`, 400)
+		return
+	}
+	lines := 50
+	if n, err := strconv.Atoi(r.URL.Query().Get("lines")); err == nil && n > 0 && n <= 1000 {
+		lines = n
+	}
+	logs, _ := collector.DockerLogs(name, lines)
+	if logs == nil {
+		logs = []string{}
+	}
+	jsonOK(w, map[string]interface{}{"container": name, "lines": logs, "total": len(logs)})
+}
+
+func (s *server) execFor(atype action.ActionType) (executorInterface, error) {
+	if strings.HasPrefix(string(atype), "service.") {
+		return s.sysExec, nil
+	}
+	if strings.HasPrefix(string(atype), "docker.") {
+		return s.dockerExec, nil
+	}
+	return nil, fmt.Errorf("no executor for action type %s", atype)
+}
+
+type executorInterface interface {
+	Execute(ctx context.Context, act action.Action) (*executor.ActionResult, error)
 }
 
 func handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -415,7 +473,12 @@ func (s *server) handlePlanByID(w http.ResponseWriter, r *http.Request) {
 
 		var results []executor.ActionResult
 		for _, step := range p.Steps {
-			result, err := s.exec.Execute(r.Context(), step.Action)
+			ex, err := s.execFor(step.Action.Type)
+			if err != nil {
+				http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), 500)
+				return
+			}
+			result, err := ex.Execute(r.Context(), step.Action)
 			if err != nil {
 				http.Error(w, fmt.Sprintf(`{"error":"execution error: %v"}`, err), 500)
 				return

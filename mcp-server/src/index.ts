@@ -50,6 +50,53 @@ server.registerTool("service.logs", {
   return { content: [{ type: "text", text: `## ${args.service_name} logs\n\`\`\`\n${(d.lines || []).join("\n")}\n\`\`\`` }], structuredContent: d };
 });
 
+// ── Docker tools ──
+
+server.registerTool("docker.list", {
+  description: "列出所有 Docker 容器及其状态（running/stopped/restarting）。",
+  inputSchema: { server_id: z.string().describe("目标服务器 ID") },
+}, async (args) => {
+  const d = await client().get("/api/v1/docker/containers");
+  const containers = d.containers || [];
+  const text = [
+    `## Docker Containers (${containers.length})`,
+    ``,
+    `| Name | Status | Image | Ports |`,
+    `|------|--------|-------|-------|`,
+    ...containers.map((c: any) => `| ${c.name} | ${c.status} | ${c.image} | ${(c.ports || []).join(", ") || "-"} |`),
+  ].join("\n");
+  return { content: [{ type: "text" as const, text }], structuredContent: d };
+});
+
+server.registerTool("docker.logs", {
+  description: "查看 Docker 容器最近 N 行日志。",
+  inputSchema: {
+    server_id: z.string().describe("目标服务器 ID"),
+    container_name: z.string().describe("容器名"),
+    lines: z.number().optional().describe("行数，默认 50"),
+  },
+}, async (args) => {
+  const d = await client().get(`/api/v1/docker/containers/${args.container_name}/logs?lines=${args.lines || 50}`);
+  return { content: [{ type: "text", text: `## ${args.container_name} logs\n\`\`\`\n${(d.lines || []).join("\n")}\n\`\`\`` }], structuredContent: d };
+});
+
+server.registerTool("docker.plan_restart", {
+  description: "生成重启 Docker 容器的计划。不会直接执行，返回 plan_id 后需调用 plan.apply。",
+  inputSchema: { server_id: z.string(), container_name: z.string().describe("容器名，如 'myapp_web_1'") },
+}, async (args) => {
+  const d = await client().post("/api/v1/plans", {
+    server_id: args.server_id, intent: `restart container ${args.container_name}`,
+    actions: [{ type: "docker.restart", target: { kind: "docker_container", name: args.container_name } }],
+  });
+  return { content: [{ type: "text" as const, text: [
+    `## Docker Restart Plan: ${args.container_name}`,
+    ``, `| Field | Value |`, `|-------|-------|`,
+    `| Plan ID | \`${d.plan_id}\` |`, `| Risk | **${d.risk}** |`,
+    `| Requires Approval | ${d.requires_approval ? "✅ Yes" : "No"} |`,
+    ``, `To execute: call \`plan.apply("${d.plan_id}")\``,
+  ].join("\n") }], structuredContent: d };
+});
+
 // ── Write tools ──
 
 server.registerTool("service.plan_restart", {
