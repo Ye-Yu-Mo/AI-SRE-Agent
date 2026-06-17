@@ -39,3 +39,5 @@ secret
 # Test artifacts
 test_project/
 *.md
+.mcp.json
+mcp-server/test-server/mcp-test.js
