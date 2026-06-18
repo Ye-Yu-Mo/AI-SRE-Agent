@@ -219,7 +219,30 @@ export async function applyDeployHandler(args: {
       branch: args.branch || "main",
       app_name: args.app_name || "",
       force: args.confirm === true,
-    }, 300_000); // 5 分钟超时 — 部署需要拉镜像
+    }, 300_000); // 5 分钟超时
+
+    // 异步模式：返回了 task_id，自动轮询
+    if (d.task_id && d.status === "running") {
+      const tid = d.task_id;
+      for (let i = 0; i < 100; i++) {
+        await new Promise(r => setTimeout(r, 3000)); // 3 秒间隔
+        try {
+          const t = await client(args.server_id).get(`/api/v1/tasks/${tid}`);
+          if (t.status === "succeeded") {
+            const result = JSON.parse(t.result || "{}");
+            const hc = result.healthcheck || {};
+            const text = `## Deploy: ${result.status || "succeeded"}\n| Field | Value |\n|-------|-------|\n| App | ${result.app_name} |\n| Release | ${result.release_id || "-"} |\n| Runtime | ${result.runtime || "-"} |\n| Healthcheck | ${hc.status || "-"} (${hc.latency_ms || 0}ms, HTTP ${hc.status_code || "-"}) |`;
+            return { content: [{ type: "text" as const, text }], structuredContent: result };
+          }
+          if (t.status === "failed") {
+            return { content: [{ type: "text" as const, text: `## Deploy Failed\n\`\`\`\n${t.error || "unknown error"}\n\`\`\`` }] };
+          }
+        } catch { /* 轮询失败，继续 */ }
+      }
+      return { content: [{ type: "text" as const, text: `## Deploy Timeout\nTask \`${tid}\` still running after 5 min. Check status with audit.search.` }] };
+    }
+
+    // 同步模式：直接返回结果
     const hc = d.healthcheck || {};
     const text = `## Deploy: ${d.status}\n| Field | Value |\n|-------|-------|\n| App | ${d.app_name} |\n| Release | ${d.release_id || "-"} |\n| Runtime | ${d.runtime || "-"} |\n| Healthcheck | ${hc.status || "-"} (${hc.latency_ms || 0}ms, HTTP ${hc.status_code || "-"}) |\n${d.error ? `| Error | ${d.error} |` : ""}`;
     return { content: [{ type: "text" as const, text }], structuredContent: d };

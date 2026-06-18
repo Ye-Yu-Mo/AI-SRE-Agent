@@ -31,6 +31,7 @@ import (
 	"github.com/ai-sre/agent/internal/risk"
 	"github.com/ai-sre/agent/internal/secret"
 	"github.com/ai-sre/agent/internal/storage"
+	"github.com/ai-sre/agent/internal/task"
 )
 
 type Config struct {
@@ -140,13 +141,16 @@ type server struct {
 	planStore   *plan.Store
 	auditStore  *storage.Store
 	deployStore *deploy.ReleaseStore
+	taskStore   *task.Store
+	taskRunner  *task.Runner
 	sysExec     *executor.SystemdExecutor
 	dockerExec  *executor.DockerExecutor
 }
 
 func newServer(cfg *Config, id *identity.Identity, planStore *plan.Store, auditStore *storage.Store, deployStore *deploy.ReleaseStore, ln net.Listener) *http.Server {
 	s := &server{cfg: cfg, identity: id, planStore: planStore, auditStore: auditStore, deployStore: deployStore,
-		sysExec: &executor.SystemdExecutor{}, dockerExec: &executor.DockerExecutor{}}
+		taskStore: task.NewStore(), sysExec: &executor.SystemdExecutor{}, dockerExec: &executor.DockerExecutor{}}
+	s.taskRunner = &task.Runner{Store: s.taskStore}
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -237,6 +241,15 @@ func newServer(cfg *Config, id *identity.Identity, planStore *plan.Store, auditS
 	})
 	apiMux.HandleFunc("/api/v1/commands/run", func(w http.ResponseWriter, r *http.Request) {
 		s.handleCommandRun(w, r)
+	})
+	apiMux.HandleFunc("/api/v1/tasks/", func(w http.ResponseWriter, r *http.Request) {
+		s.handleTaskStatus(w, r)
+	})
+	apiMux.HandleFunc("/api/v1/agent/update", func(w http.ResponseWriter, r *http.Request) {
+		s.handleAgentUpdate(w, r)
+	})
+	apiMux.HandleFunc("/api/v1/diagnose", func(w http.ResponseWriter, r *http.Request) {
+		s.handleDiagnose(w, r)
 	})
 	apiMux.HandleFunc("/api/v1/apps/", func(w http.ResponseWriter, r *http.Request) {
 		s.handleApp(w, r)
@@ -703,11 +716,79 @@ func (s *server) handleDeployApply(w http.ResponseWriter, r *http.Request) {
 		AppName  string `json:"app_name"`
 		ServerID string `json:"server_id"`
 		Force    bool   `json:"force"`
+		Async    *bool  `json:"async"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"invalid JSON"}`, 400)
 		return
 	}
+	if req.RepoURL == "" {
+		http.Error(w, `{"error":"repo_url required"}`, 400)
+		return
+	}
+
+	// 同步模式（向后兼容）
+	syncMode := req.Async != nil && !*req.Async
+	if syncMode {
+		dr := struct {
+			PlanID, RepoURL, Branch, Domain, AppName, ServerID string
+			Force bool
+		}{req.PlanID, req.RepoURL, req.Branch, req.Domain, req.AppName, req.ServerID, req.Force}
+		s.deployApply(w, r, dr)
+		return
+	}
+
+	// 异步模式：创建 task，goroutine 执行，立即返回 task_id
+	taskID := "task_" + randStr(12)
+	s.taskStore.Create(taskID)
+	capture := &responseCapture{statusCode: 200, header: make(http.Header)}
+	s.taskRunner.Run(taskID, func(t *task.Task) {
+		dr := struct {
+			PlanID, RepoURL, Branch, Domain, AppName, ServerID string
+			Force bool
+		}{req.PlanID, req.RepoURL, req.Branch, req.Domain, req.AppName, req.ServerID, req.Force}
+		s.deployApply(capture, r, dr)
+		// 解析 capture 的输出，判断成功/失败
+		var result map[string]interface{}
+		if json.Unmarshal(capture.body, &result) == nil {
+			if status, ok := result["status"].(string); ok && status == "succeeded" {
+				b, _ := json.Marshal(result)
+				s.taskRunner.MarkSucceeded(taskID, b)
+				return
+			}
+		}
+		s.taskRunner.MarkFailed(taskID, string(capture.body))
+		if capture.statusCode >= 400 {
+			s.taskRunner.MarkFailed(taskID, string(capture.body))
+		} else if !capture.wroteJSON {
+			s.taskRunner.MarkFailed(taskID, "no result produced")
+		}
+	})
+	jsonOK(w, map[string]interface{}{"task_id": taskID, "status": "running"})
+}
+
+// responseCapture 实现 http.ResponseWriter，捕获输出供 task 使用。
+type responseCapture struct {
+	statusCode int
+	header     http.Header
+	body       []byte
+	wroteJSON  bool
+}
+
+func (rc *responseCapture) Header() http.Header           { return rc.header }
+func (rc *responseCapture) WriteHeader(statusCode int)     { rc.statusCode = statusCode }
+func (rc *responseCapture) Write(data []byte) (int, error) { rc.body = append(rc.body, data...); return len(data), nil }
+
+// deployApply 同步部署逻辑（被同步和异步模式共用）。
+func (s *server) deployApply(w http.ResponseWriter, r *http.Request, req struct {
+	PlanID   string
+	RepoURL  string
+	Branch   string
+	Domain   string
+	AppName  string
+	ServerID string
+	Force    bool
+}) {
 
 	appName := req.AppName
 	if appName == "" {
@@ -1106,6 +1187,137 @@ func (s *server) handleCommandRun(w http.ResponseWriter, r *http.Request) {
 		Stdout:     redacted,
 	})
 	jsonOK(w, map[string]interface{}{"status": result, "stdout": redacted, "exit_code": extractExitCode(err)})
+}
+
+// handleTaskStatus 返回异步 task 的状态。
+func (s *server) handleTaskStatus(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/v1/tasks/")
+	taskID := strings.TrimRight(path, "/")
+	t, ok := s.taskStore.Get(taskID)
+	if !ok {
+		http.Error(w, `{"error":"task not found"}`, 404)
+		return
+	}
+	jsonOK(w, t)
+}
+
+// handleAgentUpdate 触发 Agent 自更新。
+func (s *server) handleAgentUpdate(w http.ResponseWriter, r *http.Request) {
+	var req struct{ Version string `json:"version,omitempty"` }
+	json.NewDecoder(r.Body).Decode(&req)
+
+	url := "https://github.com/Ye-Yu-Mo/AI-SRE-Agent/releases/latest/download/ai-server-agent"
+	if req.Version != "" {
+		url = fmt.Sprintf("https://github.com/Ye-Yu-Mo/AI-SRE-Agent/releases/download/%s/ai-server-agent", req.Version)
+	}
+
+	tmpPath := "/tmp/ai-server-agent.new"
+	binPath := "/usr/local/bin/ai-server-agent"
+	bakPath := binPath + ".bak"
+
+	// 下载新 binary
+	cmd := exec.Command("curl", "-fsSL", "-o", tmpPath, url)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		jsonOK(w, map[string]interface{}{"status": "failed", "step": "download", "error": string(out)})
+		return
+	}
+
+	// 校验
+	info, err := os.Stat(tmpPath)
+	if err != nil || info.Size() < 1000000 {
+		jsonOK(w, map[string]interface{}{"status": "failed", "step": "verify", "error": "downloaded binary too small or missing"})
+		return
+	}
+
+	// 备份 + 替换
+	os.Rename(binPath, bakPath)
+	os.Rename(tmpPath, binPath)
+	os.Chmod(binPath, 0755)
+
+	// 重启
+	exec.Command("systemctl", "restart", "ai-server-agent").Run()
+	time.Sleep(3 * time.Second)
+
+	// 验证
+	resp, err := http.Get("http://localhost:9090/health")
+	if err != nil || resp.StatusCode != 200 {
+		// 回滚
+		os.Rename(bakPath, binPath)
+		exec.Command("systemctl", "restart", "ai-server-agent").Run()
+		jsonOK(w, map[string]interface{}{"status": "failed", "step": "verify", "error": "new binary health check failed, rolled back"})
+		return
+	}
+	resp.Body.Close()
+
+	os.Remove(bakPath)
+	s.auditStore.RecordAudit(storage.AuditEvent{
+		ServerID: s.identity.ServerID, ActionType: "agent.update", Target: Version, Result: "succeeded",
+	})
+	jsonOK(w, map[string]interface{}{"status": "ok", "version": req.Version})
+}
+
+// handleDiagnose 返回 Docker 容器的深度诊断信息。
+func (s *server) handleDiagnose(w http.ResponseWriter, r *http.Request) {
+	container := r.URL.Query().Get("container")
+	if container == "" {
+		jsonOK(w, map[string]interface{}{"error": "container query param required"})
+		return
+	}
+	out, err := exec.Command("docker", "inspect", container).Output()
+	if err != nil {
+		jsonOK(w, map[string]interface{}{"error": "docker inspect failed: " + err.Error()})
+		return
+	}
+	var inspect []map[string]interface{}
+	json.Unmarshal(out, &inspect)
+	if len(inspect) == 0 {
+		jsonOK(w, map[string]interface{}{"error": "container not found"})
+		return
+	}
+	state := inspect[0]["State"].(map[string]interface{})
+	findings := []map[string]interface{}{}
+
+	exitCode, _ := state["ExitCode"].(float64)
+	if exitCode == 137 {
+		findings = append(findings, map[string]interface{}{
+			"severity": "high", "type": "oom_killed",
+			"detail": "exit_code=137 (SIGKILL from OOM killer)",
+			"suggestion": "Increase container memory limit",
+		})
+	}
+	if oom, ok := state["OOMKilled"].(bool); ok && oom {
+		findings = append(findings, map[string]interface{}{
+			"severity": "high", "type": "oom_killed",
+			"detail": "OOMKilled=true", "suggestion": "Increase container memory limit",
+		})
+	}
+	rc, _ := state["RestartCount"].(float64)
+	if rc > 3 {
+		findings = append(findings, map[string]interface{}{
+			"severity": "medium", "type": "frequent_restart",
+			"detail": fmt.Sprintf("%.0f restarts", rc),
+			"suggestion": "Check application logs for crash cause",
+		})
+	}
+	health, _ := state["Health"].(map[string]interface{})
+	if health != nil {
+		hstatus, _ := health["Status"].(string)
+		if hstatus != "healthy" && hstatus != "" {
+			findings = append(findings, map[string]interface{}{
+				"severity": "medium", "type": "health_check_failing",
+				"detail": fmt.Sprintf("Health status: %s", hstatus),
+				"suggestion": "Check container health check endpoint",
+			})
+		}
+	}
+
+	jsonOK(w, map[string]interface{}{
+		"container": container,
+		"exit_code": exitCode,
+		"restart_count": rc,
+		"status": state["Status"],
+		"findings": findings,
+	})
 }
 
 func riskOrder(r action.RiskLevel) int {

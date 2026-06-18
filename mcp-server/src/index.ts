@@ -254,6 +254,19 @@ server.registerTool("server.graph", {
 
 // ── File & Command tools ──
 
+server.registerTool("agent.update", {
+  description: "更新 Agent 到最新版本（或指定版本）。Agent 自动下载最新 GitHub Release binary、替换、重启、验证。失败自动回滚。",
+  inputSchema: {
+    server_id: z.string().optional().describe("目标服务器 ID（不传则更新所有在线服务器）"),
+    version: z.string().optional().describe("指定版本号如 v0.8.0（不传则用最新）"),
+  },
+}, async (args) => {
+  const d = await client(args.server_id).post("/api/v1/agent/update", {
+    version: args.version || "",
+  }, 120_000);
+  return { content: [{ type: "text" as const, text: `## Agent Update: ${d.status}\n${d.error ? `Error: ${d.error}` : "Updated successfully."}` }], structuredContent: d };
+});
+
 server.registerTool("file.write", {
   description: "上传文件到 Agent 服务器。content 为 base64 编码，path 禁止写入 /etc /boot /sys /proc。",
   inputSchema: {
