@@ -187,7 +187,7 @@ server.registerTool("app.plan_deploy", {
 });
 
 server.registerTool("app.apply_deploy", {
-  description: "执行部署：clone → build → up → healthcheck → release（反向代理/域名配置规划中）。高风险 compose 配置（privileged/docker.sock/root mount）首次调用会返回风险拦截卡片——必须先把卡片展示给用户、获得明确确认后，才能带 confirm=true 重试。不得在用户未确认时自行带 confirm。",
+  description: "执行部署：clone → build → up → healthcheck → release。高危 compose 配置触发 409 拦截。带 domain 参数自动配 Caddy 反向代理 + HTTPS。",
   inputSchema: {
     plan_id: z.string().optional().describe("plan ID"),
     server_id: z.string().optional().describe("目标服务器 ID"),
@@ -250,6 +250,55 @@ server.registerTool("server.graph", {
     ...edges.map((e: any) => `| ${e.from} | ${e.type} | ${e.to} |`),
   ].join("\n");
   return { content: [{ type: "text" as const, text }], structuredContent: g };
+});
+
+// ── File & Command tools ──
+
+server.registerTool("file.write", {
+  description: "上传文件到 Agent 服务器。content 为 base64 编码，path 禁止写入 /etc /boot /sys /proc。",
+  inputSchema: {
+    server_id: z.string().optional().describe("目标服务器 ID"),
+    path: z.string().describe("目标文件路径，如 /var/lib/myapp/config.yaml"),
+    content: z.string().describe("文件内容（base64 编码）"),
+  },
+}, async (args) => {
+  const d = await client(args.server_id).post("/api/v1/files/write", {
+    path: args.path, content: args.content,
+  }, 30_000);
+  return { content: [{ type: "text" as const, text: `## File Written\n| Field | Value |\n|-------|-------|\n| Path | \`${d.path}\` |\n| Size | ${d.size}B |\n| Status | ${d.status} |` }], structuredContent: d };
+});
+
+server.registerTool("command.run", {
+  description: "在 Agent 服务器上执行 shell 命令。必须把命令展示给用户并获得明确确认后，才能带 confirm=true 执行。不得在用户未确认时自行带 confirm。",
+  inputSchema: {
+    server_id: z.string().optional().describe("目标服务器 ID"),
+    command: z.string().describe("要执行的命令，如 'bash scalping/start.sh start'"),
+    work_dir: z.string().optional().describe("工作目录"),
+    timeout: z.number().optional().describe("超时秒数，默认 30，最大 300"),
+    confirm: z.boolean().optional().describe("用户已审阅命令并明确确认时传 true"),
+  },
+}, async (args) => {
+  // 审批闸门：不带 confirm 时返回确认卡片
+  if (!args.confirm) {
+    return { content: [{ type: "text" as const, text: [
+      "## ⚠️ 命令执行需要确认",
+      "",
+      "**将要执行的命令：**",
+      "```",
+      args.command,
+      "```",
+      args.work_dir ? `**工作目录：** ${args.work_dir}` : "",
+      "**超时：** " + (args.timeout || 30) + "s",
+      "",
+      "请将本卡片展示给用户，**不要自行决定**。",
+      "仅当用户明确表示确认后，再调用 `command.run` 并传入 `confirm: true`。",
+    ].join("\n") }] };
+  }
+  const t = args.timeout ? Math.min(args.timeout, 300) : 30;
+  const d = await client(args.server_id).post("/api/v1/commands/run", {
+    command: args.command, work_dir: args.work_dir || "", timeout: t,
+  }, (t + 5) * 1000);
+  return { content: [{ type: "text" as const, text: `## Command: ${d.status}\n\`\`\`\n${(d.stdout || "").slice(0, 2000)}\n\`\`\`\nExit code: ${d.exit_code}` }], structuredContent: d };
 });
 
 // ── Start ──

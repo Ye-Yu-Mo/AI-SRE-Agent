@@ -232,6 +232,12 @@ func newServer(cfg *Config, id *identity.Identity, planStore *plan.Store, auditS
 	apiMux.HandleFunc("/api/v1/graph", func(w http.ResponseWriter, r *http.Request) {
 		s.handleGraph(w)
 	})
+	apiMux.HandleFunc("/api/v1/files/write", func(w http.ResponseWriter, r *http.Request) {
+		s.handleFileWrite(w, r)
+	})
+	apiMux.HandleFunc("/api/v1/commands/run", func(w http.ResponseWriter, r *http.Request) {
+		s.handleCommandRun(w, r)
+	})
 	apiMux.HandleFunc("/api/v1/apps/", func(w http.ResponseWriter, r *http.Request) {
 		s.handleApp(w, r)
 	})
@@ -1017,6 +1023,89 @@ func parseDockerPorts(output string) []int {
 		}
 	}
 	return ports
+}
+
+// handleFileWrite 上传文件到 Agent 服务器。
+func (s *server) handleFileWrite(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Path    string `json:"path"`
+		Content string `json:"content"` // base64 编码
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid JSON"}`, 400)
+		return
+	}
+	if req.Path == "" || req.Content == "" {
+		http.Error(w, `{"error":"path and content required"}`, 400)
+		return
+	}
+	// 安全检查：禁止写入系统关键路径
+	for _, prefix := range []string{"/etc/", "/boot/", "/sys/", "/proc/"} {
+		if strings.HasPrefix(req.Path, prefix) {
+			http.Error(w, `{"error":"writing to system path is forbidden"}`, 403)
+			return
+		}
+	}
+	data, err := base64.StdEncoding.DecodeString(req.Content)
+	if err != nil {
+		http.Error(w, `{"error":"invalid base64 content"}`, 400)
+		return
+	}
+	os.MkdirAll(filepath.Dir(req.Path), 0755)
+	if err := os.WriteFile(req.Path, data, 0644); err != nil {
+		jsonOK(w, map[string]interface{}{"status": "failed", "error": err.Error()})
+		return
+	}
+	s.auditStore.RecordAudit(storage.AuditEvent{
+		ServerID:   s.identity.ServerID,
+		ActionType: "file.write",
+		Target:     req.Path,
+		Result:     "succeeded",
+		AfterState: fmt.Sprintf(`{"size":%d}`, len(data)),
+	})
+	jsonOK(w, map[string]interface{}{"status": "ok", "path": req.Path, "size": len(data)})
+}
+
+// handleCommandRun 执行一个 shell 命令（受限沙箱）。
+func (s *server) handleCommandRun(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Command  string `json:"command"`
+		WorkDir  string `json:"work_dir,omitempty"`
+		Timeout  int    `json:"timeout,omitempty"` // 秒，默认 30
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid JSON"}`, 400)
+		return
+	}
+	if req.Command == "" {
+		http.Error(w, `{"error":"command required"}`, 400)
+		return
+	}
+	timeout := 30
+	if req.Timeout > 0 && req.Timeout <= 300 {
+		timeout = req.Timeout
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(timeout)*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "sh", "-c", req.Command)
+	if req.WorkDir != "" {
+		cmd.Dir = req.WorkDir
+	}
+	stdout, err := cmd.CombinedOutput()
+	result := "succeeded"
+	if err != nil {
+		result = "failed"
+	}
+	redacted := secret.RedactLine(string(stdout))
+	s.auditStore.RecordAudit(storage.AuditEvent{
+		ServerID:   s.identity.ServerID,
+		ActionType: "command.run",
+		Target:     req.Command,
+		Result:     result,
+		Stdout:     redacted,
+	})
+	jsonOK(w, map[string]interface{}{"status": result, "stdout": redacted, "exit_code": extractExitCode(err)})
 }
 
 func riskOrder(r action.RiskLevel) int {
