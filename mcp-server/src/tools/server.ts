@@ -219,7 +219,7 @@ export async function applyDeployHandler(args: {
       branch: args.branch || "main",
       app_name: args.app_name || "",
       force: args.confirm === true,
-    });
+    }, 300_000); // 5 分钟超时 — 部署需要拉镜像
     const hc = d.healthcheck || {};
     const text = `## Deploy: ${d.status}\n| Field | Value |\n|-------|-------|\n| App | ${d.app_name} |\n| Release | ${d.release_id || "-"} |\n| Runtime | ${d.runtime || "-"} |\n| Healthcheck | ${hc.status || "-"} (${hc.latency_ms || 0}ms, HTTP ${hc.status_code || "-"}) |\n${d.error ? `| Error | ${d.error} |` : ""}`;
     return { content: [{ type: "text" as const, text }], structuredContent: d };

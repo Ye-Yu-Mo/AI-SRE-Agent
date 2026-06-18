@@ -168,15 +168,16 @@ export class AgentClient {
     return res.json();
   }
 
-  async post(path: string, body: unknown): Promise<any> {
+  async post(path: string, body: unknown, timeoutMs?: number): Promise<any> {
     const url = `${this.base}${path}`;
     let res: Response;
+    const timeout = timeoutMs || 10_000;
     try {
       res = await fetch(url, {
         method: "POST",
         headers: this.headers,
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(10_000),
+        signal: AbortSignal.timeout(timeout),
       });
     } catch (err) {
       throw new Error(`Agent API error: ${(err as Error).message}`);
