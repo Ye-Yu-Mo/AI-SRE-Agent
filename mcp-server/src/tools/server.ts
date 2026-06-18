@@ -1,4 +1,4 @@
-import { AgentClient, AgentError, getConfig } from "../client/agent.js";
+import { AgentClient, AgentError, listEndpoints } from "../client/agent.js";
 
 function client(serverId?: string): AgentClient {
   return new AgentClient(serverId);
@@ -176,15 +176,24 @@ export async function diagnoseWebsiteHandler(args: {
 
 // M5: serverListHandler — 返回可用的 server 列表
 export async function serverListHandler(_args: Record<string, unknown>) {
-  const lines = ["## Servers", "", "| Server ID | Endpoint |", "|-----------|----------|"];
+  const lines = ["## Servers", "", "| Server ID | Endpoint | Status |", "|-----------|----------|--------|"];
 
-  // 单服务器模式：从 AGENT_ENDPOINT 获取
-  const cfg = getConfig();
-  if (cfg.endpoint) {
-    const status = await client().get("/health").then(() => "online").catch(() => "offline");
-    lines.push(`| (default) | ${cfg.endpoint} | ${status} |`);
-  } else {
+  const servers = listEndpoints();
+  if (servers.length === 0) {
     lines.push("| - | no agents configured | - |");
+  } else {
+    const checks = await Promise.all(
+      servers.map(async (s) => {
+        const status = await new AgentClient(s.id).get("/health")
+          .then(() => "🟢 online")
+          .catch(() => "🔴 offline");
+        return { ...s, status };
+      })
+    );
+    for (const s of checks) {
+      lines.push(`| ${s.id} | ${s.endpoint} | ${s.status} |`);
+    }
+    lines.push("", `**Total:** ${servers.length} server(s)`);
   }
 
   return {

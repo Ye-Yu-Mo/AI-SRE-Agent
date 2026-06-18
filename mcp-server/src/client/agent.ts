@@ -13,6 +13,19 @@ let config: Config = {
 // 若不配则回退到 AGENT_ENDPOINT + AGENT_SECRET（单服务器模式）。
 const endpointsMap = parseEndpoints(process.env.AGENT_ENDPOINTS || "");
 
+// ListEndpoints 返回所有从 AGENT_ENDPOINTS 解析的服务器列表。
+export function listEndpoints(): Array<{ id: string; endpoint: string }> {
+  const list: Array<{ id: string; endpoint: string }> = [];
+  for (const [id, cfg] of endpointsMap) {
+    list.push({ id, endpoint: cfg.endpoint });
+  }
+  // 单服务器模式：没有 AGENT_ENDPOINTS 但有 AGENT_ENDPOINT
+  if (list.length === 0 && config.endpoint) {
+    list.push({ id: "default", endpoint: config.endpoint });
+  }
+  return list;
+}
+
 function parseEndpoints(raw: string): Map<string, { endpoint: string; secret: string }> {
   const m = new Map<string, { endpoint: string; secret: string }>();
   if (!raw) return m;
