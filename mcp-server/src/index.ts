@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { AgentClient } from "./client/agent.js";
+import { addServer, removeServer } from "./client/agent.js";
 import {
   inspectHandler,
   healthHandler,
@@ -22,6 +23,30 @@ server.registerTool("server.list", {
   description: "列出所有已配置的 Agent 服务器及其在线状态。",
   inputSchema: {},
 }, serverListHandler);
+
+// ── Server management ──
+
+server.registerTool("server.add", {
+  description: "添加一台 Agent 服务器到本地注册表（servers.json）。无需手动编辑配置文件。",
+  inputSchema: {
+    server_id: z.string().describe("服务器标识，如 srv_prod_01"),
+    endpoint: z.string().describe("Agent URL，如 http://1.2.3.4:9090"),
+    secret: z.string().describe("Agent secret（安装时打印的密钥）"),
+  },
+}, async (args) => {
+  addServer(args.server_id, args.endpoint, args.secret);
+  return { content: [{ type: "text" as const, text: `## Server Added\n| Field | Value |\n|-------|-------|\n| ID | ${args.server_id} |\n| Endpoint | ${args.endpoint} |\n\nRestart Claude Code or reconnect MCP to apply.` }] };
+});
+
+server.registerTool("server.remove", {
+  description: "从本地注册表中删除一台 Agent 服务器。",
+  inputSchema: {
+    server_id: z.string().describe("要删除的服务器标识"),
+  },
+}, async (args) => {
+  const ok = removeServer(args.server_id);
+  return { content: [{ type: "text" as const, text: ok ? `## Removed\nServer \`${args.server_id}\` removed from registry.` : `## Not Found\nServer \`${args.server_id}\` not in registry.` }] };
+});
 
 server.registerTool("server.inspect", {
   description: "查看服务器基本信息和资源使用情况。返回 CPU/Mem/Disk/OS/Kernel/Arch/Ports。",
@@ -127,13 +152,13 @@ server.registerTool("plan.apply", {
 server.registerTool("audit.search", {
   description: "查询操作审计日志。可按 server_id、action_type、result 过滤。",
   inputSchema: {
-    server_id: z.string().describe("服务器 ID"),
+    server_id: z.string().optional().describe("服务器 ID（可选，不传则查当前路由的 Agent）"),
     action_type: z.string().optional().describe("操作类型"),
     result: z.string().optional().describe("结果：succeeded/failed"),
   },
 }, async (args) => {
   const params = new URLSearchParams();
-  params.set("server_id", args.server_id);
+  if (args.server_id) params.set("server_id", args.server_id);
   if (args.action_type) params.set("action_type", args.action_type);
   if (args.result) params.set("result", args.result);
   const d = await client(args.server_id).get(`/api/v1/audit?${params}`);

@@ -302,9 +302,20 @@ func (s *server) handleServiceLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleAudit(w http.ResponseWriter, r *http.Request) {
+	// MCP 的 server_id 是别名，与 Agent identity 不同。
+	// 如果传入的 server_id 与 Agent identity 匹配，或为空 → 返回该 Agent 的所有审计记录。
 	q := r.URL.Query()
+	filterServerID := q.Get("server_id")
+	if filterServerID != "" {
+		// 若传入值与 Agent identity 不匹配且不是 MCP 别名，不过滤（返回全部）
+		if s.identity != nil && filterServerID != s.identity.ServerID {
+			// 尝试宽松匹配：srv_remote / srv_new / srv_local 等别名都放行
+			// 不做严格过滤，让数据全量返回
+			filterServerID = ""
+		}
+	}
 	events, err := s.auditStore.SearchAudit(
-		q.Get("server_id"),
+		filterServerID,
 		q.Get("action_type"),
 		q.Get("result"),
 		50,
