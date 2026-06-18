@@ -29,14 +29,29 @@
   .status-err { color:var(--red); }
   .section-title { font-size:16px; font-weight:600; margin-bottom:12px; }
   .error-msg { color:var(--red); padding:16px; background:var(--card); border-radius:8px; }
+  .login-box { max-width:400px; margin:80px auto; }
+  .login-box input { width:100%; padding:12px; border:1px solid var(--border); border-radius:6px; background:var(--bg); color:var(--text); font-size:16px; margin-bottom:12px; }
+  .login-box input:focus { outline:none; border-color:var(--accent); }
+  .login-box button { width:100%; padding:12px; background:var(--accent); color:#fff; border:none; border-radius:6px; font-size:16px; cursor:pointer; }
+  .logout-btn { background:transparent; color:var(--muted); border:1px solid var(--border); border-radius:4px; padding:4px 12px; font-size:12px; cursor:pointer; }
   @media(max-width:600px){ .grid{grid-template-columns:1fr;} .container{padding:12px;} }
 </style>
 </head>
 <body>
-<div class="container">
+<div class="container" id="login-screen">
+  <div class="login-box">
+    <h1 style="margin-bottom:24px">🖥 AI Server Agent</h1>
+    <p style="color:var(--muted);margin-bottom:16px">Enter your agent secret to access the dashboard.</p>
+    <input type="password" id="token-input" placeholder="Bearer token (agent secret)" autofocus>
+    <button onclick="login()">Connect</button>
+    <div class="error-msg" id="login-error" style="display:none;margin-top:12px"></div>
+  </div>
+</div>
+
+<div class="container" id="app-screen" style="display:none">
   <header>
     <div><h1>🖥 AI Server Agent</h1></div>
-    <div class="badge" id="version">loading...</div>
+    <div><span class="badge" id="version">loading...</span> <button class="logout-btn" onclick="logout()">Logout</button></div>
   </header>
   <div id="app">
     <div class="error-msg" id="error" style="display:none"></div>
@@ -61,20 +76,54 @@
 
 <script>
 const API = '';
-async function get(path) {
-  try {
-    const r = await fetch(API+path);
-    if (!r.ok) throw new Error('HTTP '+r.status);
-    return r.json();
-  } catch(e) { throw e; }
+const TOKEN_KEY = 'agent_token';
+
+function getToken() { return sessionStorage.getItem(TOKEN_KEY); }
+function setToken(t) { sessionStorage.setItem(TOKEN_KEY, t); }
+function clearToken() { sessionStorage.removeItem(TOKEN_KEY); }
+
+async function apiGet(path) {
+  const r = await fetch(API+path, {
+    headers: { Authorization: 'Bearer '+getToken() }
+  });
+  if (!r.ok) throw new Error('HTTP '+r.status);
+  return r.json();
 }
+
+function login() {
+  const t = document.getElementById('token-input').value.trim();
+  if (!t) return;
+  setToken(t);
+  fetch(API+'/api/v1/agent/version', { headers: { Authorization: 'Bearer '+t } })
+    .then(r => r.ok ? r.json() : Promise.reject(r))
+    .then(v => {
+      document.getElementById('login-screen').style.display = 'none';
+      document.getElementById('app-screen').style.display = 'block';
+      loadDashboard();
+    })
+    .catch(() => {
+      clearToken();
+      const el = document.getElementById('login-error');
+      el.style.display = 'block';
+      el.textContent = 'Invalid token. Please check your agent secret.';
+    });
+}
+
+function logout() {
+  clearToken();
+  location.reload();
+}
+
+document.getElementById('token-input').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') login();
+});
 
 function fmtBytes(b) { if(!b)return '0 B'; const u=['B','KB','MB','GB']; const i=Math.floor(Math.log(b)/Math.log(1024)); return (b/Math.pow(1024,i)).toFixed(1)+' '+u[i]; }
 
-async function load() {
+async function loadDashboard() {
   try {
     const [inspect, containers, audit, version] = await Promise.all([
-      get('/api/v1/inspect'), get('/api/v1/docker/containers'), get('/api/v1/audit?server_id=srv'), get('/api/v1/agent/version')
+      apiGet('/api/v1/inspect'), apiGet('/api/v1/docker/containers'), apiGet('/api/v1/audit?server_id=srv'), apiGet('/api/v1/agent/version')
     ]);
     document.getElementById('version').textContent = 'v'+version.version+' | '+version.server_id;
     document.getElementById('cpu').textContent = (inspect.cpu_percent||0)+'%';
@@ -93,11 +142,20 @@ async function load() {
       `<tr><td>${(e.created_at||'').slice(0,19)}</td><td>${e.action_type}</td><td>${e.target}</td><td>${e.result}</td></tr>`
     ).join('') : '<tr><td colspan="4" style="color:var(--muted)">no audit records</td></tr>';
   } catch(e) {
+    if (e.message === 'HTTP 401') { logout(); return; }
     document.getElementById('error').style.display='block';
-    document.getElementById('error').textContent = 'Failed to load: '+e.message+' (check agent connectivity)';
+    document.getElementById('error').textContent = 'Failed to load: '+e.message;
   }
 }
-load();
+
+// 自动登录
+if (getToken()) {
+  apiGet('/api/v1/agent/version').then(() => {
+    document.getElementById('login-screen').style.display = 'none';
+    document.getElementById('app-screen').style.display = 'block';
+    loadDashboard();
+  }).catch(() => { clearToken(); });
+}
 </script>
 </body>
 </html>
