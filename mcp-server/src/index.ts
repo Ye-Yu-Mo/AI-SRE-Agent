@@ -9,6 +9,7 @@ import {
   planRestartHandler,
   applyHandler,
   applyDeployHandler,
+  diagnoseWebsiteHandler,
 } from "./tools/server.js";
 
 const server = new McpServer({ name: "ai-server-agent", version: "1.0.0" });
@@ -190,21 +191,7 @@ server.registerTool("diagnose.website", {
     domain: z.string().optional().describe("域名或 IP"),
     port: z.number().optional().describe("端口号，默认 80"),
   },
-}, async (args) => {
-  const port = args.port || 80;
-  const reports: string[] = [];
-  // 检查端口
-  const d = await client().get("/api/v1/inspect");
-  const ports = d.listening_ports || [];
-  const found = ports.find((p: any) => p.port === port);
-  reports.push(`- Port ${port}/${found?.protocol || "tcp"}: ${found ? `**${found.state}** (${found.process})` : "❌ NOT LISTENING"}`);
-  // 检查 Docker 容器
-  try {
-    const ctn = await client().get("/api/v1/docker/containers");
-    reports.push(`- Containers: ${(ctn.containers || []).length} running`);
-  } catch { reports.push("- Containers: unable to check"); }
-  return { content: [{ type: "text", text: `## Diagnose: ${args.domain || args.server_id}:${port}\n${reports.join("\n")}` }] };
-});
+}, diagnoseWebsiteHandler);
 
 // ── Graph ──
 

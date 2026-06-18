@@ -51,6 +51,24 @@ func HTTPHealthCheck(url string, expectedStatus int, timeout time.Duration) Heal
 	return HealthResult{Status: HealthPassing, StatusCode: resp.StatusCode, LatencyMs: latency}
 }
 
+// probeHealthOnPorts 依次探测候选端口，第一个通的返回 passing，全不通返回 failing。
+func probeHealthOnPorts(ports []int, timeout time.Duration) HealthResult {
+	for _, port := range ports {
+		url := fmt.Sprintf("http://localhost:%d", port)
+		r := HTTPHealthCheck(url, 0, timeout)
+		if r.Status == HealthPassing {
+			return r
+		}
+	}
+	return HealthResult{Status: HealthFailing}
+}
+
+// ProbeAppHealth 对运行中应用做实时健康探测，探测固定候选端口集合。
+// workDir 暂未使用，预留给后续从 compose 文件解析端口。
+func ProbeAppHealth(_ string, _ string) HealthResult {
+	return probeHealthOnPorts([]int{80, 8080, 8888, 3000, 5000}, 2*time.Second)
+}
+
 // TCPHealthCheck 拨号检查端口可达
 func TCPHealthCheck(host string, port int, timeout time.Duration) HealthResult {
 	addr := net.JoinHostPort(host, strconv.Itoa(port))

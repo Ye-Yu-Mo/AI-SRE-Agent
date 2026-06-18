@@ -41,3 +41,4 @@ test_project/
 *.md
 .mcp.json
 mcp-server/test-server/mcp-test.js
+agent/ai-server-agent-linux

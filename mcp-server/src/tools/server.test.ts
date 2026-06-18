@@ -99,6 +99,40 @@ function startMockAgent(): Promise<{ server: http.Server; port: number }> {
   });
 }
 
+// Mock agent for diagnose: inspect returns listening ports, docker returns a mix
+// of healthy and broken containers.
+function startMockDiagnoseAgent(): Promise<{ server: http.Server; port: number }> {
+  return new Promise((resolve) => {
+    const server = http.createServer((req, res) => {
+      if (req.url === "/api/v1/inspect") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          listening_ports: [
+            { port: 8888, protocol: "tcp", state: "LISTEN", process: "docker-proxy" },
+          ],
+        }));
+        return;
+      }
+      if (req.url === "/api/v1/docker/containers") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          containers: [
+            { name: "myapp_web_1", status: "Up 2 hours", image: "myapp_web", ports: ["0.0.0.0:8888->80/tcp"] },
+            { name: "broken_1", status: "Exited (1) 5 minutes ago", image: "broken", ports: [] },
+          ],
+        }));
+        return;
+      }
+      res.writeHead(404);
+      res.end("not found");
+    });
+    server.listen(0, "127.0.0.1", () => {
+      const addr = server.address() as { port: number };
+      resolve({ server, port: addr.port });
+    });
+  });
+}
+
 // Mock agent: POST /api/v1/deploy/apply without force → 409 with risks
 //                                                with force:true → 200 succeeded
 function startMockDeployAgent(): Promise<{ server: http.Server; port: number }> {
@@ -197,6 +231,36 @@ describe("Tool handlers — output format", () => {
       () => inspectHandler({ server_id: "srv_01" }),
       /Agent API error/
     );
+  });
+});
+
+describe("diagnose.website — enhanced output", () => {
+  let server: http.Server;
+  let port: number;
+
+  before(async () => {
+    const mock = await startMockDiagnoseAgent();
+    server = mock.server;
+    port = mock.port;
+    setConfig({ endpoint: `http://127.0.0.1:${port}`, secret: "test-secret" });
+  });
+
+  after(() => { server.close(); });
+
+  it("lists each container with name and status, not just count", async () => {
+    const { diagnoseWebsiteHandler } = await import("./server.js");
+    const result = await diagnoseWebsiteHandler({ server_id: "srv_01", port: 8888 });
+    const text = result.content[0].text;
+    assert.ok(text.includes("myapp_web_1"), `expected container name: ${text}`);
+    assert.ok(text.includes("LISTEN"), `expected port state: ${text}`);
+  });
+
+  it("flags exited/restarting containers when port not listening", async () => {
+    const { diagnoseWebsiteHandler } = await import("./server.js");
+    const result = await diagnoseWebsiteHandler({ server_id: "srv_01", port: 9999 });
+    const text = result.content[0].text;
+    assert.ok(/NOT LISTENING|未监听/i.test(text), `expected not-listening flag: ${text}`);
+    assert.ok(text.includes("broken_1"), `expected broken container surfaced: ${text}`);
   });
 });
 

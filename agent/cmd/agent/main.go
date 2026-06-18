@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
@@ -592,6 +593,7 @@ func (s *server) handleDeployApply(w http.ResponseWriter, r *http.Request) {
 		Branch   string `json:"branch"`
 		Domain   string `json:"domain"`
 		AppName  string `json:"app_name"`
+		ServerID string `json:"server_id"`
 		Force    bool   `json:"force"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -667,20 +669,16 @@ func (s *server) handleDeployApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Step 6: healthcheck — 尝试多个常见端口
-	hc := deploy.HTTPHealthCheck("http://localhost:80", 0, 3*time.Second)
-	if hc.Status != deploy.HealthPassing {
-		for _, port := range []int{8080, 8888, 3000, 5000} {
-			url := fmt.Sprintf("http://localhost:%d", port)
-			if hc2 := deploy.HTTPHealthCheck(url, 0, 3*time.Second); hc2.Status == deploy.HealthPassing {
-				hc = hc2
-				break
-			}
-		}
+	// Step 6: healthcheck — 用 ProbeAppHealth 统一探测逻辑（与 app.status 复用同一函数）
+	hc := deploy.ProbeAppHealth(appName, workDir)
+
+	// Step 7: compose 快照 — 存入 release record，供 rollback 恢复配置
+	var composeSnap string
+	if data, err := os.ReadFile(filepath.Join(workDir, composeFile)); err == nil {
+		composeSnap = base64.StdEncoding.EncodeToString(data)
 	}
 
-	// Step 7: release — 即使 healthcheck 失败也创建（记录状态供后续排查）
-	// 读取当前 commit hash
+	// Step 8: release
 	commitOut, _ := exec.Command("git", "-C", workDir, "rev-parse", "HEAD").Output()
 	commit := strings.TrimSpace(string(commitOut))
 	if commit == "" {
@@ -691,15 +689,26 @@ func (s *server) handleDeployApply(w http.ResponseWriter, r *http.Request) {
 	rel := deploy.Release{
 		ID:                releaseID,
 		AppID:             appName,
-		ServerID:          "srv_remote_01",
+		ServerID:          req.ServerID,
 		Commit:            commit,
 		Image:             appName + ":latest",
 		Status:            "active",
 		HealthcheckStatus: string(hc.Status),
+		ComposeSnapshot:   composeSnap,
 	}
 	s.deployStore.Create(rel)
 	s.deployStore.Activate(releaseID)
 	s.deployStore.SaveToDisk(filepath.Join(s.cfg.Dir, "data", "releases.jsonl"))
+
+	// Step 9: audit log
+	s.auditStore.RecordAudit(storage.AuditEvent{
+		ServerID:   req.ServerID,
+		ActionType: "app.deploy",
+		Target:     appName,
+		Risk:       "high",
+		Result:     "succeeded",
+		AfterState: fmt.Sprintf(`{"release_id":%q,"commit":%q,"healthcheck":%q}`, releaseID, commit, hc.Status),
+	})
 
 	jsonOK(w, map[string]interface{}{
 		"status":      "succeeded",
@@ -723,7 +732,14 @@ func (s *server) handleApp(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"error":"app not found"}`, 404)
 			return
 		}
-		jsonOK(w, map[string]interface{}{"app_name": appName, "release": rel})
+		// 实时健康探测：current_health 反映当前状态，与 release record 的历史快照分开
+		workDir := filepath.Join(s.cfg.Dir, "apps", appName)
+		current := deploy.ProbeAppHealth(appName, workDir)
+		jsonOK(w, map[string]interface{}{
+			"app_name":       appName,
+			"release":        rel,
+			"current_health": current,
+		})
 		return
 	}
 

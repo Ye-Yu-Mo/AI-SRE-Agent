@@ -122,6 +122,56 @@ export async function applyHandler(args: { plan_id: string; confirm?: boolean })
   }
 }
 
+export async function diagnoseWebsiteHandler(args: {
+  server_id: string;
+  domain?: string;
+  port?: number;
+}) {
+  const port = args.port || 80;
+  const lines: string[] = [];
+
+  // 端口状态
+  const d = await client().get("/api/v1/inspect");
+  const ports: any[] = d.listening_ports || [];
+  const found = ports.find((p: any) => p.port === port);
+  lines.push(`**Port ${port}:** ${found ? `✅ LISTEN (${found.process || "-"})` : "❌ NOT LISTENING"}`);
+
+  // 容器列表 — 每个容器独立一行，不再只报数量
+  let containers: any[] = [];
+  try {
+    const ctn = await client().get("/api/v1/docker/containers");
+    containers = ctn.containers || [];
+  } catch { /* docker 不可用时跳过 */ }
+
+  if (containers.length > 0) {
+    lines.push("", "**Containers:**");
+    for (const c of containers) {
+      const isHealthy = (c.status as string).startsWith("Up");
+      const icon = isHealthy ? "✅" : "⚠️";
+      const portStr = (c.ports as string[] || []).join(", ") || "-";
+      lines.push(`- ${icon} \`${c.name}\` ${c.status} | ports: ${portStr}`);
+    }
+  } else {
+    lines.push("- No containers found");
+  }
+
+  // 端口不通时，主动提示异常容器
+  if (!found) {
+    const broken = containers.filter((c: any) =>
+      !(c.status as string).startsWith("Up")
+    );
+    if (broken.length > 0) {
+      lines.push("", "**⚠️ Potential cause — non-running containers:**");
+      for (const c of broken) lines.push(`  - \`${c.name}\`: ${c.status}`);
+    }
+  }
+
+  const target = args.domain || args.server_id;
+  return {
+    content: [{ type: "text" as const, text: `## Diagnose: ${target}:${port}\n\n${lines.join("\n")}` }],
+  };
+}
+
 // M3: applyDeployHandler — 部署是 high risk 操作，必须和 plan.apply 一样过安全闸门。
 // Agent 侧 ValidateCompose 检出 supply chain 风险（privileged/docker.sock/root mount/host net）
 // 返回 409。MCP 层接住 409 → 返回风险卡片，指示 AI 停下问用户，不自行 force。

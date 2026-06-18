@@ -2,25 +2,28 @@ package deploy
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
 
 type Release struct {
-	ID                string        `json:"release_id"`
-	AppID             string        `json:"app_id"`
-	ServerID          string        `json:"server_id"`
-	Commit            string        `json:"commit"`
-	Image             string        `json:"image"`
-	Status            string        `json:"status"` // active, failed, archived
-	HealthcheckStatus string        `json:"healthcheck_status"`
-	PreviousReleaseID string        `json:"previous_release_id,omitempty"`
-	CreatedAt         string        `json:"created_at"`
-	ActivatedAt       string        `json:"activated_at,omitempty"`
+	ID                string `json:"release_id"`
+	AppID             string `json:"app_id"`
+	ServerID          string `json:"server_id"`
+	Commit            string `json:"commit"`
+	Image             string `json:"image"`
+	Status            string `json:"status"` // active, failed, archived
+	HealthcheckStatus string `json:"healthcheck_status"`
+	ComposeSnapshot   string `json:"compose_snapshot,omitempty"` // base64 encoded compose file at deploy time
+	PreviousReleaseID string `json:"previous_release_id,omitempty"`
+	CreatedAt         string `json:"created_at"`
+	ActivatedAt       string `json:"activated_at,omitempty"`
 }
 
 type ReleaseStore struct {
@@ -153,6 +156,13 @@ func Rollback(rs *ReleaseStore, appID, workDir, composeFile string) (*Release, e
 
 	// git checkout 到上一个 commit
 	exec.Command("git", "-C", workDir, "checkout", prev.Commit).Run()
+
+	// 若上一个 release 有 compose 快照，恢复 compose 文件（覆盖 checkout 得到的版本）
+	if prev.ComposeSnapshot != "" {
+		if data, err := base64.StdEncoding.DecodeString(prev.ComposeSnapshot); err == nil {
+			os.WriteFile(filepath.Join(workDir, composeFile), data, 0644)
+		}
+	}
 
 	// 重新构建并启动
 	ComposeBuild(ctx, workDir, composeFile)

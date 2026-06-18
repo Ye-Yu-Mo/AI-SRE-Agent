@@ -16,6 +16,22 @@
 
 ---
 
+## v0.3.0 — 2026-06-18
+
+### 新增
+
+- **实时 healthcheck**: `app.status` 新增 `current_health` 实时探测字段，与部署时 `healthcheck_status` 历史快照分离。不再用旧状态误导用户
+- **部署审计日志**: `app.deploy` 操作写入 audit log，补上审计闭环中最大缺口
+- **compose 快照**: release record 新增 `compose_snapshot` 字段（base64 编码 compose 文件），rollback 时恢复完整配置而非只回退代码
+- **诊断增强**: `diagnose.website` 输出每个容器名/状态/端口映射，端口不通时列出异常容器作为潜在原因
+
+### 重构
+
+- **ProbeAppHealth**: 提取多端口健康探测为独立函数，deploy 和 app.status 复用同一探测逻辑，消灭重复端口列表
+- **diagnoseWebsiteHandler**: 从 `index.ts` 内联提取到 `server.ts`，与现有 handler 风格统一
+
+---
+
 ## v0.2.0 — 2026-06-17
 
 ### 修复
