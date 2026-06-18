@@ -114,14 +114,15 @@ npm install && npm run build
 
 ## Web Console
 
-Agent 内置仪表盘，浏览器访问 `http://<server>:9090/` 即可查看：
+内置现代化仪表盘，浏览器访问 `http://<server>:9090/` 输入 Agent secret 即可查看：
 
-- CPU / Memory / Disk 实时仪表
+- Tailwind CSS + Lucide Icons 设计，深色/浅色主题切换
+- 中英文国际化
+- CPU / Memory / Disk 实时仪表 + 进度条
 - Docker 容器状态 + 端口映射
-- 最近 10 条审计记录
+- 审计日志表格
 - 版本号 + server_id
-
-深色主题，零外部依赖，全部内嵌在 Go binary 中。
+- Token 存在 sessionStorage，关标签页自动清除
 
 ## 多服务器
 

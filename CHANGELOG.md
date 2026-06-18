@@ -16,6 +16,21 @@
 
 ---
 
+## v0.5.1 — 2026-06-18
+
+### 新增
+
+- **Web Console 2.0**: Tailwind CSS + Lucide Icons 重构，深色/浅色主题切换，中英文国际化，玻璃拟态卡片，进度条动画
+- **Console 登录鉴权**: Bearer token 登录表单，sessionStorage 持久化，401 自动登出
+- **server.list 多服务器**: 读取 `AGENT_ENDPOINTS` 显示所有服务器在线状态（Promise.all 并发检查）
+
+### 修复
+
+- CI 注入 `-ldflags -X main.Version` 版本号
+- Release 二进制统一命名为 `ai-server-agent`（无 arch 后缀）
+
+---
+
 ## v0.5.0 — 2026-06-18
 
 ### 新增

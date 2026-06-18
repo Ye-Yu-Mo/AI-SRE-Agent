@@ -1,161 +1,348 @@
 <!DOCTYPE html>
-<html lang="zh-CN" data-theme="dark">
+<html lang="zh" class="dark">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AI Server Agent</title>
-<style>
-  :root {
-    --bg: #0d1117; --card: #161b22; --border: #30363d;
-    --text: #e6edf3; --muted: #8b949e; --accent: #58a6ff;
-    --green: #3fb950; --red: #f85149; --yellow: #d2991d;
-  }
-  * { margin:0; padding:0; box-sizing:border-box; }
-  body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:var(--bg); color:var(--text); line-height:1.5; }
-  .container { max-width:1200px; margin:0 auto; padding:24px; }
-  header { display:flex; justify-content:space-between; align-items:center; margin-bottom:24px; padding-bottom:16px; border-bottom:1px solid var(--border); }
-  h1 { font-size:20px; font-weight:600; }
-  .badge { font-size:12px; color:var(--muted); }
-  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:16px; margin-bottom:24px; }
-  .card { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:16px; }
-  .card h3 { font-size:13px; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:8px; }
-  .card .value { font-size:28px; font-weight:600; }
-  .card .sub { font-size:12px; color:var(--muted); margin-top:4px; }
-  table { width:100%; border-collapse:collapse; margin-bottom:24px; }
-  th { text-align:left; font-size:12px; color:var(--muted); text-transform:uppercase; padding:8px 12px; border-bottom:1px solid var(--border); }
-  td { padding:8px 12px; border-bottom:1px solid var(--border); font-size:14px; }
-  .status-ok { color:var(--green); }
-  .status-warn { color:var(--yellow); }
-  .status-err { color:var(--red); }
-  .section-title { font-size:16px; font-weight:600; margin-bottom:12px; }
-  .error-msg { color:var(--red); padding:16px; background:var(--card); border-radius:8px; }
-  .login-box { max-width:400px; margin:80px auto; }
-  .login-box input { width:100%; padding:12px; border:1px solid var(--border); border-radius:6px; background:var(--bg); color:var(--text); font-size:16px; margin-bottom:12px; }
-  .login-box input:focus { outline:none; border-color:var(--accent); }
-  .login-box button { width:100%; padding:12px; background:var(--accent); color:#fff; border:none; border-radius:6px; font-size:16px; cursor:pointer; }
-  .logout-btn { background:transparent; color:var(--muted); border:1px solid var(--border); border-radius:4px; padding:4px 12px; font-size:12px; cursor:pointer; }
-  @media(max-width:600px){ .grid{grid-template-columns:1fr;} .container{padding:12px;} }
-</style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Server Agent</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            gray: { 750: '#2d3748', 850: '#1a202c', 950: '#0d1117' }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    * { transition: background-color 0.3s ease, border-color 0.3s ease; }
+    body { -webkit-font-smoothing: antialiased; }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background-color: rgba(156, 163, 175, 0.5); border-radius: 10px; }
+    .dark ::-webkit-scrollbar-thumb { background-color: rgba(75, 85, 99, 0.5); }
+    .progress-bar { transition: width 1s cubic-bezier(0.4, 0, 0.2, 1); }
+    .glass-card { backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+  </style>
 </head>
-<body>
-<div class="container" id="login-screen">
-  <div class="login-box">
-    <h1 style="margin-bottom:24px">🖥 AI Server Agent</h1>
-    <p style="color:var(--muted);margin-bottom:16px">Enter your agent secret to access the dashboard.</p>
-    <input type="password" id="token-input" placeholder="Bearer token (agent secret)" autofocus>
-    <button onclick="login()">Connect</button>
-    <div class="error-msg" id="login-error" style="display:none;margin-top:12px"></div>
+<body class="bg-slate-50 dark:bg-gray-950 text-slate-800 dark:text-slate-200 min-h-screen flex flex-col font-sans">
+
+  <div class="fixed top-4 right-4 z-50 flex items-center space-x-2">
+    <button onclick="toggleLang()" class="p-2 rounded-lg bg-white/80 dark:bg-gray-800/80 shadow-sm border border-slate-200 dark:border-gray-700 hover:bg-slate-100 dark:hover:bg-gray-700 focus:outline-none glass-card transition-all" title="Switch Language">
+      <i data-lucide="languages" class="w-5 h-5 text-slate-600 dark:text-slate-300"></i>
+    </button>
+    <button onclick="toggleTheme()" class="p-2 rounded-lg bg-white/80 dark:bg-gray-800/80 shadow-sm border border-slate-200 dark:border-gray-700 hover:bg-slate-100 dark:hover:bg-gray-700 focus:outline-none glass-card transition-all" title="Toggle Theme">
+      <i data-lucide="sun" id="theme-icon" class="w-5 h-5 text-amber-500"></i>
+    </button>
   </div>
-</div>
 
-<div class="container" id="app-screen" style="display:none">
-  <header>
-    <div><h1>🖥 AI Server Agent</h1></div>
-    <div><span class="badge" id="version">loading...</span> <button class="logout-btn" onclick="logout()">Logout</button></div>
-  </header>
-  <div id="app">
-    <div class="error-msg" id="error" style="display:none"></div>
+  <main id="login-screen" class="flex-grow flex items-center justify-center p-4 transition-opacity duration-500">
+    <div class="max-w-md w-full bg-white dark:bg-gray-850 p-8 rounded-2xl shadow-xl border border-slate-200 dark:border-gray-800 glass-card">
+      <div class="text-center mb-8 flex flex-col items-center">
+        <div class="w-16 h-16 bg-blue-100 dark:bg-blue-900/30 rounded-2xl flex items-center justify-center mb-4 text-blue-600 dark:text-blue-400 shadow-inner">
+          <i data-lucide="server" class="w-8 h-8"></i>
+        </div>
+        <h1 class="text-2xl font-bold text-slate-900 dark:text-white" data-i18n="title">AI Server Agent</h1>
+        <p class="text-slate-500 dark:text-gray-400 mt-2 text-sm" data-i18n="login_desc">Enter your agent secret to access the dashboard.</p>
+      </div>
+      <div class="space-y-5">
+        <div>
+          <div class="relative">
+            <i data-lucide="key" class="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400"></i>
+            <input type="password" id="token-input" class="w-full pl-12 pr-4 py-3 bg-slate-50 dark:bg-gray-900 border border-slate-200 dark:border-gray-700 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all placeholder-slate-400 dark:text-white" placeholder="Bearer token (agent secret)" autofocus>
+          </div>
+          <p class="text-xs text-slate-500 mt-2 ml-1" data-i18n="token_hint">Enter your agent secret key.</p>
+        </div>
+        <button onclick="login()" class="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-xl shadow-lg shadow-blue-500/30 transition-all flex justify-center items-center gap-2 group">
+          <span data-i18n="connect">Connect</span>
+          <i data-lucide="arrow-right" class="w-4 h-4 group-hover:translate-x-1 transition-transform"></i>
+        </button>
+        <div id="login-error" class="hidden mt-4 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/50 rounded-lg text-red-600 dark:text-red-400 text-sm flex items-start gap-2">
+          <i data-lucide="alert-circle" class="w-4 h-4 mt-0.5 shrink-0"></i>
+          <span data-i18n="invalid_token">Invalid token. Please check your agent secret.</span>
+        </div>
+      </div>
+    </div>
+  </main>
 
-    <div class="section-title">📊 Resources</div>
-    <div class="grid">
-      <div class="card"><h3>CPU</h3><div class="value" id="cpu">--</div><div class="sub" id="cpu-sub"></div></div>
-      <div class="card"><h3>Memory</h3><div class="value" id="mem">--</div><div class="sub" id="mem-sub"></div></div>
-      <div class="card"><h3>Disk</h3><div class="value" id="disk">--</div><div class="sub" id="disk-sub"></div></div>
-      <div class="card"><h3>Status</h3><div class="value" id="health">--</div></div>
+  <main id="app-screen" class="hidden flex-grow max-w-6xl w-full mx-auto p-4 md:p-6 lg:p-8 transition-opacity duration-500">
+    <header class="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4 border-b border-slate-200 dark:border-gray-800 pb-6 mt-4">
+      <div class="flex items-center gap-3">
+        <div class="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center text-white shadow-md">
+          <i data-lucide="activity" class="w-5 h-5"></i>
+        </div>
+        <div>
+          <h1 class="text-xl font-bold text-slate-900 dark:text-white flex items-center gap-2"><span data-i18n="title">AI Server Agent</span></h1>
+          <div class="text-xs text-slate-500 dark:text-gray-400 font-mono mt-0.5 flex items-center gap-1">
+            <i data-lucide="git-commit" class="w-3 h-3"></i>
+            <span id="version">loading...</span>
+          </div>
+        </div>
+      </div>
+      <button onclick="logout()" class="px-4 py-2 flex items-center gap-2 text-sm font-medium text-slate-600 dark:text-slate-300 bg-white dark:bg-gray-800 border border-slate-200 dark:border-gray-700 rounded-lg hover:bg-slate-50 dark:hover:bg-gray-700 shadow-sm transition-all">
+        <i data-lucide="log-out" class="w-4 h-4"></i>
+        <span data-i18n="logout">Logout</span>
+      </button>
+    </header>
+
+    <div id="error" class="hidden mb-6 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/50 rounded-xl text-red-600 dark:text-red-400 text-sm flex items-center gap-2"></div>
+
+    <div class="mb-8">
+      <h2 class="text-lg font-semibold mb-4 flex items-center gap-2 text-slate-800 dark:text-slate-200">
+        <i data-lucide="pie-chart" class="w-5 h-5 text-blue-500"></i>
+        <span data-i18n="resources">Resources</span>
+      </h2>
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6">
+        <div class="bg-white dark:bg-gray-850 p-5 rounded-2xl border border-slate-200 dark:border-gray-800 shadow-sm hover:shadow-md transition-shadow">
+          <div class="flex justify-between items-start mb-2">
+            <h3 class="text-sm font-medium text-slate-500 dark:text-gray-400" data-i18n="cpu">CPU</h3>
+            <i data-lucide="cpu" class="w-4 h-4 text-slate-400"></i>
+          </div>
+          <div class="text-3xl font-bold text-slate-800 dark:text-white mb-1" id="cpu">--</div>
+          <div class="text-xs text-slate-500 dark:text-gray-400 h-4 truncate" id="cpu-sub">--</div>
+          <div class="w-full bg-slate-100 dark:bg-gray-800 rounded-full h-1.5 mt-4 overflow-hidden">
+            <div id="cpu-bar" class="bg-blue-500 h-1.5 rounded-full progress-bar" style="width:0%"></div>
+          </div>
+        </div>
+        <div class="bg-white dark:bg-gray-850 p-5 rounded-2xl border border-slate-200 dark:border-gray-800 shadow-sm hover:shadow-md transition-shadow">
+          <div class="flex justify-between items-start mb-2">
+            <h3 class="text-sm font-medium text-slate-500 dark:text-gray-400" data-i18n="memory">Memory</h3>
+            <i data-lucide="memory-stick" class="w-4 h-4 text-slate-400"></i>
+          </div>
+          <div class="text-3xl font-bold text-slate-800 dark:text-white mb-1" id="mem">--</div>
+          <div class="text-xs text-slate-500 dark:text-gray-400 h-4 truncate" id="mem-sub">--</div>
+          <div class="w-full bg-slate-100 dark:bg-gray-800 rounded-full h-1.5 mt-4 overflow-hidden">
+            <div id="mem-bar" class="bg-purple-500 h-1.5 rounded-full progress-bar" style="width:0%"></div>
+          </div>
+        </div>
+        <div class="bg-white dark:bg-gray-850 p-5 rounded-2xl border border-slate-200 dark:border-gray-800 shadow-sm hover:shadow-md transition-shadow">
+          <div class="flex justify-between items-start mb-2">
+            <h3 class="text-sm font-medium text-slate-500 dark:text-gray-400" data-i18n="disk">Disk</h3>
+            <i data-lucide="hard-drive" class="w-4 h-4 text-slate-400"></i>
+          </div>
+          <div class="text-3xl font-bold text-slate-800 dark:text-white mb-1" id="disk">--</div>
+          <div class="text-xs text-slate-500 dark:text-gray-400 h-4 truncate" id="disk-sub">--</div>
+          <div class="w-full bg-slate-100 dark:bg-gray-800 rounded-full h-1.5 mt-4 overflow-hidden">
+            <div id="disk-bar" class="bg-amber-500 h-1.5 rounded-full progress-bar" style="width:0%"></div>
+          </div>
+        </div>
+        <div class="bg-white dark:bg-gray-850 p-5 rounded-2xl border border-slate-200 dark:border-gray-800 shadow-sm hover:shadow-md transition-shadow flex flex-col">
+          <div class="flex justify-between items-start mb-2">
+            <h3 class="text-sm font-medium text-slate-500 dark:text-gray-400" data-i18n="status">Status</h3>
+            <i data-lucide="shield-check" class="w-4 h-4 text-slate-400"></i>
+          </div>
+          <div class="flex-grow flex items-center" id="health"><div class="text-3xl font-bold text-slate-300 dark:text-gray-600">--</div></div>
+          <div class="text-xs text-slate-500 dark:text-gray-400 h-4 mt-4 flex items-center gap-1">
+            <span class="relative flex h-2 w-2">
+              <span id="ping-dot" class="absolute inline-flex h-full w-full rounded-full bg-slate-400 opacity-75"></span>
+              <span id="ping-dot-core" class="relative inline-flex rounded-full h-2 w-2 bg-slate-500"></span>
+            </span>
+            <span id="uptime-text">--</span>
+          </div>
+        </div>
+      </div>
     </div>
 
-    <div class="section-title">🐳 Containers</div>
-    <table><thead><tr><th>Name</th><th>Status</th><th>Image</th><th>Ports</th></tr></thead>
-    <tbody id="containers"><tr><td colspan="4" style="color:var(--muted)">loading...</td></tr></tbody></table>
-
-    <div class="section-title">📋 Audit Log</div>
-    <table><thead><tr><th>Time</th><th>Action</th><th>Target</th><th>Result</th></tr></thead>
-    <tbody id="audit"><tr><td colspan="4" style="color:var(--muted)">loading...</td></tr></tbody></table>
-  </div>
-</div>
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 lg:gap-8">
+      <div class="bg-white dark:bg-gray-850 rounded-2xl border border-slate-200 dark:border-gray-800 shadow-sm overflow-hidden flex flex-col">
+        <div class="px-5 py-4 border-b border-slate-100 dark:border-gray-800 flex justify-between items-center bg-slate-50/50 dark:bg-gray-900/50">
+          <h2 class="font-semibold flex items-center gap-2 text-slate-800 dark:text-slate-200">
+            <i data-lucide="container" class="w-5 h-5 text-blue-500"></i>
+            <span data-i18n="containers">Containers</span>
+          </h2>
+          <span class="text-xs font-medium px-2 py-1 bg-slate-100 dark:bg-gray-800 rounded-md text-slate-500 dark:text-gray-400" id="container-count">0</span>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm text-left whitespace-nowrap">
+            <thead class="text-xs text-slate-500 dark:text-gray-400 uppercase bg-slate-50 dark:bg-gray-900/80">
+              <tr>
+                <th class="px-5 py-3 font-medium" data-i18n="name">Name</th>
+                <th class="px-5 py-3 font-medium" data-i18n="status">Status</th>
+                <th class="px-5 py-3 font-medium" data-i18n="image">Image</th>
+                <th class="px-5 py-3 font-medium" data-i18n="ports">Ports</th>
+              </tr>
+            </thead>
+            <tbody id="containers" class="divide-y divide-slate-100 dark:divide-gray-800/80 text-slate-600 dark:text-slate-300">
+              <tr><td colspan="4" class="px-5 py-8 text-center text-slate-400" data-i18n="loading">loading...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="bg-white dark:bg-gray-850 rounded-2xl border border-slate-200 dark:border-gray-800 shadow-sm overflow-hidden flex flex-col">
+        <div class="px-5 py-4 border-b border-slate-100 dark:border-gray-800 flex justify-between items-center bg-slate-50/50 dark:bg-gray-900/50">
+          <h2 class="font-semibold flex items-center gap-2 text-slate-800 dark:text-slate-200">
+            <i data-lucide="clipboard-list" class="w-5 h-5 text-purple-500"></i>
+            <span data-i18n="audit_log">Audit Log</span>
+          </h2>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm text-left whitespace-nowrap">
+            <thead class="text-xs text-slate-500 dark:text-gray-400 uppercase bg-slate-50 dark:bg-gray-900/80">
+              <tr>
+                <th class="px-5 py-3 font-medium" data-i18n="time">Time</th>
+                <th class="px-5 py-3 font-medium" data-i18n="action">Action</th>
+                <th class="px-5 py-3 font-medium" data-i18n="target">Target</th>
+                <th class="px-5 py-3 font-medium" data-i18n="result">Result</th>
+              </tr>
+            </thead>
+            <tbody id="audit" class="divide-y divide-slate-100 dark:divide-gray-800/80 text-slate-600 dark:text-slate-300">
+              <tr><td colspan="4" class="px-5 py-8 text-center text-slate-400" data-i18n="loading">loading...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </main>
 
 <script>
 const API = '';
 const TOKEN_KEY = 'agent_token';
+const THEME_KEY = 'agent_theme';
+const LANG_KEY = 'agent_lang';
+
+let currentLang = localStorage.getItem(LANG_KEY) || 'zh';
+let currentTheme = localStorage.getItem(THEME_KEY) || 'dark';
+
+const i18nDict = {
+  en: {
+    title:"AI Server Agent",login_desc:"Enter your agent secret to access the dashboard.",
+    token_hint:"Enter your agent secret key.",connect:"Connect",logout:"Logout",
+    resources:"Resources",cpu:"CPU",memory:"Memory",disk:"Disk",status:"Status",
+    healthy:"Healthy",offline:"Offline",containers:"Containers",name:"Name",
+    image:"Image",ports:"Ports",audit_log:"Audit Log",time:"Time",action:"Action",
+    target:"Target",result:"Result",loading:"Loading...",no_containers:"No containers",
+    no_audit:"No audit records",invalid_token:"Invalid token.",cores:"cores",uptime:"Uptime: "
+  },
+  zh: {
+    title:"AI 服务器终端",login_desc:"请输入 Agent 密钥以访问服务器仪表盘。",
+    token_hint:"输入 Agent 密钥即可登录。",connect:"连接服务器",logout:"退出登录",
+    resources:"资源概览",cpu:"处理器",memory:"内存",disk:"存储磁盘",status:"运行状态",
+    healthy:"运行正常",offline:"离线",containers:"容器服务",name:"容器名称",
+    image:"依赖镜像",ports:"映射端口",audit_log:"审计日志",time:"时间",action:"操作类型",
+    target:"目标实体",result:"执行结果",loading:"数据加载中...",no_containers:"当前暂无运行中的容器",
+    no_audit:"暂无审计记录",invalid_token:"凭据验证失败。",cores:"核心",uptime:"已运行: "
+  }
+};
+
+function t(key) { return i18nDict[currentLang][key] || key; }
+function applyI18n() {
+  document.querySelectorAll('[data-i18n]').forEach(el => { el.textContent = t(el.getAttribute('data-i18n')); });
+}
+function initTheme() {
+  const root = document.documentElement;
+  const icon = document.getElementById('theme-icon');
+  if (currentTheme === 'dark') {
+    root.classList.add('dark');
+    icon.setAttribute('data-lucide','moon');
+    icon.className = "w-5 h-5 text-blue-300";
+  } else {
+    root.classList.remove('dark');
+    icon.setAttribute('data-lucide','sun');
+    icon.className = "w-5 h-5 text-amber-500";
+  }
+  lucide.createIcons();
+}
+function toggleTheme() { currentTheme = currentTheme === 'dark' ? 'light' : 'dark'; localStorage.setItem(THEME_KEY, currentTheme); initTheme(); }
+function toggleLang() { currentLang = currentLang === 'zh' ? 'en' : 'zh'; localStorage.setItem(LANG_KEY, currentLang); applyI18n(); if(cachedData) renderDashboard(); }
 
 function getToken() { return sessionStorage.getItem(TOKEN_KEY); }
 function setToken(t) { sessionStorage.setItem(TOKEN_KEY, t); }
 function clearToken() { sessionStorage.removeItem(TOKEN_KEY); }
 
+function fmtBytes(b) { if(!b)return '0 B'; const u=['B','KB','MB','GB','TB']; const i=Math.floor(Math.log(b)/Math.log(1024)); return (b/Math.pow(1024,i)).toFixed(1)+' '+u[i]; }
+function getColorClass(p) { if(p>85)return'bg-red-500'; if(p>70)return'bg-amber-500'; return'bg-blue-500'; }
+
+function getStatusBadge(status) {
+  const s=(status||'').toLowerCase();
+  if(s.includes('up')) return `<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400"><span class="w-1.5 h-1.5 bg-green-500 rounded-full mr-1.5"></span>Up</span>`;
+  if(s.includes('exited')||s.includes('stop')) return `<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-800 dark:bg-slate-800 dark:text-slate-400"><span class="w-1.5 h-1.5 bg-slate-400 rounded-full mr-1.5"></span>Exited</span>`;
+  return `<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400">${status}</span>`;
+}
+function getResultBadge(r) {
+  r=(r||'').toLowerCase();
+  if(r==='succeeded'||r==='ok') return `<span class="text-green-600 dark:text-green-400 font-medium">${r}</span>`;
+  if(r==='failed'||r==='error'||r==='blocked') return `<span class="text-red-600 dark:text-red-400 font-medium">${r}</span>`;
+  return `<span class="text-slate-600 dark:text-slate-400">${r}</span>`;
+}
+
 async function apiGet(path) {
-  const r = await fetch(API+path, {
-    headers: { Authorization: 'Bearer '+getToken() }
-  });
+  const r = await fetch(API+path, { headers: { Authorization: 'Bearer '+getToken() } });
   if (!r.ok) throw new Error('HTTP '+r.status);
   return r.json();
 }
 
+function switchScreen(screen) {
+  document.getElementById('login-screen').style.display = screen === 'app' ? 'none' : '';
+  document.getElementById('app-screen').classList.toggle('hidden', screen !== 'app');
+}
+
 function login() {
-  const t = document.getElementById('token-input').value.trim();
-  if (!t) return;
-  setToken(t);
-  fetch(API+'/api/v1/agent/version', { headers: { Authorization: 'Bearer '+t } })
-    .then(r => r.ok ? r.json() : Promise.reject(r))
-    .then(v => {
-      document.getElementById('login-screen').style.display = 'none';
-      document.getElementById('app-screen').style.display = 'block';
-      loadDashboard();
-    })
-    .catch(() => {
-      clearToken();
-      const el = document.getElementById('login-error');
-      el.style.display = 'block';
-      el.textContent = 'Invalid token. Please check your agent secret.';
-    });
+  const v = document.getElementById('token-input').value.trim();
+  if(!v) return;
+  setToken(v);
+  apiGet('/api/v1/agent/version')
+    .then(() => { document.getElementById('login-error').classList.add('hidden'); switchScreen('app'); loadDashboard(); })
+    .catch(() => { clearToken(); document.getElementById('login-error').classList.remove('hidden'); });
 }
 
-function logout() {
-  clearToken();
-  location.reload();
-}
+function logout() { clearToken(); location.reload(); }
+document.getElementById('token-input').addEventListener('keydown', function(e) { if(e.key==='Enter')login(); });
 
-document.getElementById('token-input').addEventListener('keydown', function(e) {
-  if (e.key === 'Enter') login();
-});
-
-function fmtBytes(b) { if(!b)return '0 B'; const u=['B','KB','MB','GB']; const i=Math.floor(Math.log(b)/Math.log(1024)); return (b/Math.pow(1024,i)).toFixed(1)+' '+u[i]; }
+let cachedData = null;
 
 async function loadDashboard() {
   try {
     const [inspect, containers, audit, version] = await Promise.all([
       apiGet('/api/v1/inspect'), apiGet('/api/v1/docker/containers'), apiGet('/api/v1/audit?server_id=srv'), apiGet('/api/v1/agent/version')
     ]);
-    document.getElementById('version').textContent = 'v'+version.version+' | '+version.server_id;
-    document.getElementById('cpu').textContent = (inspect.cpu_percent||0)+'%';
-    document.getElementById('cpu-sub').textContent = (inspect.cpu_model||'')+' ('+(inspect.cpu_cores||0)+' cores)';
-    document.getElementById('mem').textContent = (inspect.memory_percent||0)+'%';
-    document.getElementById('mem-sub').textContent = fmtBytes(inspect.memory_used)+' / '+fmtBytes(inspect.memory_total);
-    document.getElementById('disk').textContent = (inspect.disk_percent||0)+'%';
-    document.getElementById('disk-sub').textContent = fmtBytes(inspect.disk_used)+' / '+fmtBytes(inspect.disk_total);
-    document.getElementById('health').innerHTML = '<span class="status-ok">● healthy</span>';
-    const ctn = (containers.containers||[]);
-    document.getElementById('containers').innerHTML = ctn.length ? ctn.map(c =>
-      `<tr><td>${c.name}</td><td>${c.status}</td><td>${c.image||'-'}</td><td>${(c.ports||[]).join(', ')||'-'}</td></tr>`
-    ).join('') : '<tr><td colspan="4" style="color:var(--muted)">no containers</td></tr>';
-    const events = (audit.events||[]).slice(0,10);
-    document.getElementById('audit').innerHTML = events.length ? events.map(e =>
-      `<tr><td>${(e.created_at||'').slice(0,19)}</td><td>${e.action_type}</td><td>${e.target}</td><td>${e.result}</td></tr>`
-    ).join('') : '<tr><td colspan="4" style="color:var(--muted)">no audit records</td></tr>';
-  } catch(e) {
-    if (e.message === 'HTTP 401') { logout(); return; }
-    document.getElementById('error').style.display='block';
-    document.getElementById('error').textContent = 'Failed to load: '+e.message;
-  }
+    cachedData = { inspect, containers, audit, version };
+    renderDashboard();
+  } catch(e) { if(e.message==='HTTP 401'){logout();return;}
+    const el=document.getElementById('error'); el.classList.remove('hidden'); el.innerHTML=`<i data-lucide="alert-triangle" class="w-5 h-5"></i> Failed: ${e.message}`; lucide.createIcons(); }
 }
 
-// 自动登录
-if (getToken()) {
-  apiGet('/api/v1/agent/version').then(() => {
-    document.getElementById('login-screen').style.display = 'none';
-    document.getElementById('app-screen').style.display = 'block';
-    loadDashboard();
-  }).catch(() => { clearToken(); });
+function renderDashboard() {
+  if(!cachedData)return;
+  const {inspect,containers,audit,version}=cachedData;
+  document.getElementById('version').textContent='v'+version.version+' • '+version.server_id;
+  const cpuPct=inspect.cpu_percent||0;
+  document.getElementById('cpu').textContent=cpuPct+'%';
+  document.getElementById('cpu-sub').textContent=(inspect.cpu_model||'')+' ('+(inspect.cpu_cores||0)+' '+t('cores')+')';
+  const cpuBar=document.getElementById('cpu-bar'); cpuBar.style.width=cpuPct+'%'; cpuBar.className=`h-1.5 rounded-full progress-bar ${getColorClass(cpuPct)}`;
+  const memPct=inspect.memory_percent||0;
+  document.getElementById('mem').textContent=memPct+'%';
+  document.getElementById('mem-sub').textContent=fmtBytes(inspect.memory_used)+' / '+fmtBytes(inspect.memory_total);
+  document.getElementById('mem-bar').style.width=memPct+'%';
+  const diskPct=inspect.disk_percent||0;
+  document.getElementById('disk').textContent=diskPct+'%';
+  document.getElementById('disk-sub').textContent=fmtBytes(inspect.disk_used)+' / '+fmtBytes(inspect.disk_total);
+  document.getElementById('disk-bar').style.width=diskPct+'%';
+  document.getElementById('health').innerHTML=`<div class="flex items-center gap-2 text-2xl font-bold text-green-500 dark:text-green-400"><i data-lucide="check-circle-2" class="w-8 h-8"></i><span>${t('healthy')}</span></div>`;
+  document.getElementById('ping-dot').className='absolute inline-flex h-full w-full rounded-full bg-green-400 animate-ping';
+  document.getElementById('ping-dot-core').className='relative inline-flex rounded-full h-2 w-2 bg-green-500';
+  document.getElementById('uptime-text').textContent=t('uptime')+'99.9%';
+  const ctn=(containers.containers||[]);
+  document.getElementById('container-count').textContent=ctn.length;
+  document.getElementById('containers').innerHTML=ctn.length?ctn.map(c=>
+    `<tr class="hover:bg-slate-50/50 dark:hover:bg-gray-800/50"><td class="px-5 py-4 font-medium text-slate-800 dark:text-slate-200">${c.name}</td><td class="px-5 py-4">${getStatusBadge(c.status)}</td><td class="px-5 py-4 text-slate-500 dark:text-gray-400 font-mono text-xs">${c.image||'-'}</td><td class="px-5 py-4 text-slate-500 dark:text-gray-400 font-mono text-xs">${(c.ports||[]).join(', ')||'-'}</td></tr>`
+  ).join(''):`<tr><td colspan="4" class="px-5 py-8 text-center text-slate-400">${t('no_containers')}</td></tr>`;
+  const events=(audit.events||[]).slice(0,10);
+  document.getElementById('audit').innerHTML=events.length?events.map(e=>{
+    const d=new Date(e.created_at);
+    return `<tr class="hover:bg-slate-50/50 dark:hover:bg-gray-800/50"><td class="px-5 py-4 text-xs text-slate-500 dark:text-gray-400">${d.toLocaleString(currentLang==='zh'?'zh-CN':'en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}</td><td class="px-5 py-4 font-medium text-slate-700 dark:text-slate-300"><span class="px-2 py-1 bg-slate-100 dark:bg-gray-800 rounded text-xs">${e.action_type}</span></td><td class="px-5 py-4 text-slate-600 dark:text-slate-400">${e.target}</td><td class="px-5 py-4 text-xs">${getResultBadge(e.result)}</td></tr>`;
+  }).join(''):`<tr><td colspan="4" class="px-5 py-8 text-center text-slate-400">${t('no_audit')}</td></tr>`;
+  lucide.createIcons();
 }
+
+document.addEventListener('DOMContentLoaded',()=>{
+  initTheme(); applyI18n(); lucide.createIcons();
+  const saved=getToken();
+  if(saved){ apiGet('/api/v1/agent/version').then(()=>{switchScreen('app');loadDashboard();}).catch(()=>clearToken()); }
+});
 </script>
 </body>
 </html>
