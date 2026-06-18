@@ -118,6 +118,10 @@ func run(cfg *Config) error {
 	}()
 
 	log.Printf("listening on %s", ln.Addr().String())
+
+	// 心跳 goroutine
+	go heartbeatLoop(cfg.Dir)
+
 	if err := srv.Serve(ln); err != http.ErrServerClosed {
 		return fmt.Errorf("http: %w", err)
 	}
@@ -164,6 +168,24 @@ func newServer(cfg *Config, id *identity.Identity, planStore *plan.Store, auditS
 	apiMux := http.NewServeMux()
 	apiMux.HandleFunc("/api/v1/agent/version", func(w http.ResponseWriter, r *http.Request) {
 		jsonOK(w, map[string]interface{}{"version": Version, "server_id": id.ServerID})
+	})
+	apiMux.HandleFunc("/api/v1/agent/heartbeat", func(w http.ResponseWriter, r *http.Request) {
+		hbPath := filepath.Join(cfg.Dir, "data", "heartbeat")
+		data, err := os.ReadFile(hbPath)
+		if err != nil {
+			jsonOK(w, map[string]interface{}{"status": "unknown"})
+			return
+		}
+		ts, err := time.Parse(time.RFC3339, strings.TrimSpace(string(data)))
+		if err != nil {
+			jsonOK(w, map[string]interface{}{"status": "unknown"})
+			return
+		}
+		status := "offline"
+		if time.Since(ts) < 90*time.Second {
+			status = "online"
+		}
+		jsonOK(w, map[string]interface{}{"status": status, "last_beat": ts.Format(time.RFC3339)})
 	})
 	apiMux.HandleFunc("/api/v1/identity", func(w http.ResponseWriter, r *http.Request) {
 		s.handleIdentity(w)
@@ -648,6 +670,24 @@ func (s *server) handleDeployPlan(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// writeDeployError 返回结构化部署错误。
+func writeDeployError(w http.ResponseWriter, err *deploy.DeployError) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusInternalServerError)
+	json.NewEncoder(w).Encode(map[string]interface{}{"status": "failed", "error": err})
+}
+
+// extractExitCode 从 CombinedOutput 错误中提取退出码。
+func extractExitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	if ee, ok := err.(*exec.ExitError); ok {
+		return ee.ExitCode()
+	}
+	return 1
+}
+
 func (s *server) handleDeployApply(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		PlanID   string `json:"plan_id"`
@@ -670,6 +710,17 @@ func (s *server) handleDeployApply(w http.ResponseWriter, r *http.Request) {
 	}
 
 	workDir := filepath.Join(s.cfg.Dir, "apps", appName)
+	deferFail := func() { os.RemoveAll(workDir) }
+
+	// 探测默认分支（若用户未指定）
+	branch := req.Branch
+	if branch == "" {
+		if detected := deploy.DetectDefaultBranch(req.RepoURL); detected != "" {
+			branch = detected
+		} else {
+			branch = "main"
+		}
+	}
 
 	// 先停掉旧容器
 	if _, err := os.Stat(workDir); err == nil {
@@ -683,19 +734,31 @@ func (s *server) handleDeployApply(w http.ResponseWriter, r *http.Request) {
 	os.RemoveAll(workDir)
 
 	// Step 1: clone
-	if err := deploy.CloneRepo(req.RepoURL, req.Branch, workDir); err != nil {
-		s.writeDeployAudit(appName, "clone", "failed", err.Error())
-		jsonOK(w, map[string]interface{}{"status": "failed", "step": "clone", "error": err.Error()})
+	if err := deploy.CloneRepo(req.RepoURL, branch, workDir); err != nil {
+		deferFail()
+		derr := deploy.TranslateError(extractExitCode(err), err.Error())
+		s.writeDeployAudit(appName, "clone", "failed", derr.Message)
+		writeDeployError(w, derr)
 		return
 	}
 
 	// Step 2: detect
 	detected := deploy.Detect(workDir)
 	if detected.Runtime == deploy.RuntimeUnknown {
-		s.writeDeployAudit(appName, "detect", "failed", "no runtime detected")
-		jsonOK(w, map[string]interface{}{"status": "failed", "step": "detect", "error": "no Dockerfile or compose file found"})
+		deferFail()
+		derr := deploy.TranslateError(1, "no Dockerfile or compose file found in repository root")
+		s.writeDeployAudit(appName, "detect", "failed", derr.Message)
+		writeDeployError(w, derr)
 		return
 	}
+
+	// Dockerfile-only 路径
+	if detected.Runtime == deploy.RuntimeDockerfile {
+		s.handleDockerfileDeploy(w, r, appName, workDir, req.Domain, detected.Files)
+		return
+	}
+
+	// Compose 路径
 
 	composeFile := "docker-compose.yml"
 	for _, f := range detected.Files {
@@ -721,18 +784,22 @@ func (s *server) handleDeployApply(w http.ResponseWriter, r *http.Request) {
 
 	// Step 4: build
 	ctx := r.Context()
-	_, _, err := deploy.ComposeBuild(ctx, workDir, composeFile)
+	stdout, stderr, err := deploy.ComposeBuild(ctx, workDir, composeFile)
 	if err != nil {
-		s.writeDeployAudit(appName, "build", "failed", err.Error())
-		jsonOK(w, map[string]interface{}{"status": "failed", "step": "build", "error": err.Error()})
+		deferFail()
+		derr := deploy.TranslateError(extractExitCode(err), stdout+"\n"+stderr)
+		s.writeDeployAudit(appName, "build", "failed", derr.Message)
+		writeDeployError(w, derr)
 		return
 	}
 
 	// Step 5: up
-	_, _, err = deploy.ComposeUp(ctx, workDir, composeFile)
+	stdout, stderr, err = deploy.ComposeUp(ctx, workDir, composeFile)
 	if err != nil {
-		s.writeDeployAudit(appName, "up", "failed", err.Error())
-		jsonOK(w, map[string]interface{}{"status": "failed", "step": "up", "error": err.Error()})
+		deferFail()
+		derr := deploy.TranslateError(extractExitCode(err), stdout+"\n"+stderr)
+		s.writeDeployAudit(appName, "up", "failed", derr.Message)
+		writeDeployError(w, derr)
 		return
 	}
 
@@ -864,6 +931,93 @@ func (s *server) writeDeployAudit(appName, step, result, detail string) {
 	})
 }
 
+// handleDockerfileDeploy 处理纯 Dockerfile（无 compose 文件）项目的部署。
+func (s *server) handleDockerfileDeploy(w http.ResponseWriter, r *http.Request, appName, workDir, domain string, files []string) {
+	ctx := r.Context()
+	dockerfile := findDockerfile(workDir, files)
+
+	// docker build
+	tag := appName + ":latest"
+	buildCmd := exec.CommandContext(ctx, "docker", "build", "-t", tag, "-f", dockerfile, workDir)
+	buildOut, buildErr := buildCmd.CombinedOutput()
+	if buildErr != nil {
+		os.RemoveAll(workDir)
+		derr := deploy.TranslateError(extractExitCode(buildErr), string(buildOut))
+		s.writeDeployAudit(appName, "build", "failed", derr.Message)
+		writeDeployError(w, derr)
+		return
+	}
+
+	// docker run -d -P
+	runCmd := exec.CommandContext(ctx, "docker", "run", "-d", "-P", "--name", appName, tag)
+	runOut, runErr := runCmd.CombinedOutput()
+	if runErr != nil {
+		os.RemoveAll(workDir)
+		derr := deploy.TranslateError(extractExitCode(runErr), string(runOut))
+		s.writeDeployAudit(appName, "up", "failed", derr.Message)
+		writeDeployError(w, derr)
+		return
+	}
+
+	// 获取容器端口
+	portOut, _ := exec.CommandContext(ctx, "docker", "port", appName).Output()
+	hc := deploy.HealthResult{Status: deploy.HealthFailing}
+	if ports := parseDockerPorts(string(portOut)); len(ports) > 0 {
+		hc = deploy.TCPHealthCheck("localhost", ports[0], 5*time.Second)
+	} else {
+		hc = deploy.ProbeAppHealth(appName, "")
+	}
+
+	// Caddy proxy
+	if domain != "" && hc.Status == deploy.HealthPassing && hc.Port > 0 {
+		deploy.ConfigureCaddy(domain, strconv.Itoa(hc.Port))
+	}
+
+	// Release
+	commitOut, _ := exec.Command("git", "-C", workDir, "rev-parse", "HEAD").Output()
+	commit := strings.TrimSpace(string(commitOut))
+	releaseID := "rel_" + randStr(12)
+	rel := deploy.Release{
+		ID: releaseID, AppID: appName, ServerID: "srv_remote_01",
+		Commit: commit, Image: tag, Status: "active", HealthcheckStatus: string(hc.Status),
+	}
+	s.deployStore.Create(rel)
+	s.deployStore.Activate(releaseID)
+	s.deployStore.SaveToDisk(filepath.Join(s.cfg.Dir, "data", "releases.jsonl"))
+	s.writeDeployAudit(appName, "release", "succeeded", string(hc.Status))
+
+	jsonOK(w, map[string]interface{}{"status": "succeeded", "release_id": releaseID, "app_name": appName, "runtime": "dockerfile", "healthcheck": hc})
+}
+
+func findDockerfile(workDir string, files []string) string {
+	for _, f := range files {
+		if f == "Dockerfile" {
+			return filepath.Join(workDir, "Dockerfile")
+		}
+	}
+	return filepath.Join(workDir, "Dockerfile")
+}
+
+func parseDockerPorts(output string) []int {
+	var ports []int
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" { continue }
+		// 格式: 80/tcp -> 0.0.0.0:32768
+		parts := strings.Split(line, "->")
+		if len(parts) < 2 { continue }
+		hostPort := strings.TrimSpace(parts[1])
+		hostPort = strings.SplitN(hostPort, "/", 2)[0]
+		if idx := strings.LastIndex(hostPort, ":"); idx >= 0 {
+			hostPort = hostPort[idx+1:]
+		}
+		if p, err := strconv.Atoi(hostPort); err == nil && p > 0 {
+			ports = append(ports, p)
+		}
+	}
+	return ports
+}
+
 func riskOrder(r action.RiskLevel) int {
 	switch r {
 	case action.RiskLow:
@@ -900,4 +1054,14 @@ func authMiddleware(secret string, next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func heartbeatLoop(dataDir string) {
+	path := filepath.Join(dataDir, "data", "heartbeat")
+	os.MkdirAll(filepath.Dir(path), 0755)
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		os.WriteFile(path, []byte(time.Now().UTC().Format(time.RFC3339)), 0644)
+	}
 }

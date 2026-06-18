@@ -184,10 +184,10 @@ export async function serverListHandler(_args: Record<string, unknown>) {
   } else {
     const checks = await Promise.all(
       servers.map(async (s) => {
-        const status = await new AgentClient(s.id).get("/health")
-          .then(() => "🟢 online")
-          .catch(() => "🔴 offline");
-        return { ...s, status };
+        const hb = await new AgentClient(s.id).get("/api/v1/agent/heartbeat")
+          .then((d) => d.status || "unknown")
+          .catch(() => "offline");
+        return { ...s, status: hb === "online" ? "🟢 online" : "🔴 " + hb };
       })
     );
     for (const s of checks) {

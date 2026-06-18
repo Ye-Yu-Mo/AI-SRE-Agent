@@ -173,7 +173,7 @@ func Rollback(rs *ReleaseStore, appID, workDir, composeFile string) (*Release, e
 
 // CloneRepo 浅克隆 Git 仓库
 func CloneRepo(url, branch, destDir string) error {
-	args := []string{"clone"}
+	args := []string{"clone", "--depth", "1"}
 	if branch != "" {
 		args = append(args, "-b", branch)
 	}
@@ -184,4 +184,28 @@ func CloneRepo(url, branch, destDir string) error {
 		return fmt.Errorf("git clone: %v\n%s", err, string(out))
 	}
 	return nil
+}
+
+// DetectDefaultBranch 通过 git ls-remote 探测远程仓库的默认分支。
+// 返回空字符串表示探测失败。
+func DetectDefaultBranch(repoURL string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "ls-remote", "--symref", repoURL, "HEAD")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	// 输出格式: ref: refs/heads/main	HEAD
+	line := strings.TrimSpace(string(out))
+	if strings.HasPrefix(line, "ref: refs/heads/") {
+		parts := strings.Fields(line)
+		if len(parts) >= 2 {
+			ref := strings.TrimPrefix(parts[0], "ref: refs/heads/")
+			if ref != "" {
+				return ref
+			}
+		}
+	}
+	return ""
 }
