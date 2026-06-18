@@ -28,6 +28,7 @@ import (
 	"github.com/ai-sre/agent/internal/identity"
 	"github.com/ai-sre/agent/internal/plan"
 	"github.com/ai-sre/agent/internal/risk"
+	"github.com/ai-sre/agent/internal/secret"
 	"github.com/ai-sre/agent/internal/storage"
 )
 
@@ -252,7 +253,12 @@ func (s *server) handleServiceLogs(w http.ResponseWriter, r *http.Request) {
 	if len(logLines) == 1 && logLines[0] == "" {
 		logLines = nil
 	}
-	jsonOK(w, map[string]interface{}{"service": name, "lines": logLines, "total": len(logLines)})
+	// 脱敏：journal 日志可能含 secret
+	redacted := make([]string, len(logLines))
+	for i, l := range logLines {
+		redacted[i] = secret.RedactLine(l)
+	}
+	jsonOK(w, map[string]interface{}{"service": name, "lines": redacted, "total": len(redacted)})
 }
 
 func (s *server) handleAudit(w http.ResponseWriter, r *http.Request) {
@@ -302,7 +308,12 @@ func (s *server) handleDockerLogs(w http.ResponseWriter, r *http.Request) {
 	if logs == nil {
 		logs = []string{}
 	}
-	jsonOK(w, map[string]interface{}{"container": name, "lines": logs, "total": len(logs)})
+	// 脱敏：容器日志可能含 secret
+	redacted := make([]string, len(logs))
+	for i, l := range logs {
+		redacted[i] = secret.RedactLine(l)
+	}
+	jsonOK(w, map[string]interface{}{"container": name, "lines": redacted, "total": len(redacted)})
 }
 
 func (s *server) handleGraph(w http.ResponseWriter) {
@@ -622,6 +633,7 @@ func (s *server) handleDeployApply(w http.ResponseWriter, r *http.Request) {
 
 	// Step 1: clone
 	if err := deploy.CloneRepo(req.RepoURL, req.Branch, workDir); err != nil {
+		s.writeDeployAudit(appName, "clone", "failed", err.Error())
 		jsonOK(w, map[string]interface{}{"status": "failed", "step": "clone", "error": err.Error()})
 		return
 	}
@@ -629,6 +641,7 @@ func (s *server) handleDeployApply(w http.ResponseWriter, r *http.Request) {
 	// Step 2: detect
 	detected := deploy.Detect(workDir)
 	if detected.Runtime == deploy.RuntimeUnknown {
+		s.writeDeployAudit(appName, "detect", "failed", "no runtime detected")
 		jsonOK(w, map[string]interface{}{"status": "failed", "step": "detect", "error": "no Dockerfile or compose file found"})
 		return
 	}
@@ -644,6 +657,7 @@ func (s *server) handleDeployApply(w http.ResponseWriter, r *http.Request) {
 	// Step 3: validate — 危险配置必须显式确认才能继续
 	validate := deploy.ValidateCompose(workDir, composeFile)
 	if !validate.Valid && !req.Force {
+		s.writeDeployAudit(appName, "validate", "blocked", strings.Join(validate.Risks, "; "))
 		risksJSON, _ := json.Marshal(validate.Risks)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusConflict)
@@ -658,6 +672,7 @@ func (s *server) handleDeployApply(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	_, _, err := deploy.ComposeBuild(ctx, workDir, composeFile)
 	if err != nil {
+		s.writeDeployAudit(appName, "build", "failed", err.Error())
 		jsonOK(w, map[string]interface{}{"status": "failed", "step": "build", "error": err.Error()})
 		return
 	}
@@ -665,6 +680,7 @@ func (s *server) handleDeployApply(w http.ResponseWriter, r *http.Request) {
 	// Step 5: up
 	_, _, err = deploy.ComposeUp(ctx, workDir, composeFile)
 	if err != nil {
+		s.writeDeployAudit(appName, "up", "failed", err.Error())
 		jsonOK(w, map[string]interface{}{"status": "failed", "step": "up", "error": err.Error()})
 		return
 	}
@@ -701,14 +717,7 @@ func (s *server) handleDeployApply(w http.ResponseWriter, r *http.Request) {
 	s.deployStore.SaveToDisk(filepath.Join(s.cfg.Dir, "data", "releases.jsonl"))
 
 	// Step 9: audit log
-	s.auditStore.RecordAudit(storage.AuditEvent{
-		ServerID:   req.ServerID,
-		ActionType: "app.deploy",
-		Target:     appName,
-		Risk:       "high",
-		Result:     "succeeded",
-		AfterState: fmt.Sprintf(`{"release_id":%q,"commit":%q,"healthcheck":%q}`, releaseID, commit, hc.Status),
-	})
+	s.writeDeployAudit(appName, "release", "succeeded", string(hc.Status))
 
 	jsonOK(w, map[string]interface{}{
 		"status":      "succeeded",
@@ -774,6 +783,18 @@ func findComposeFile(dir string) string {
 		}
 	}
 	return "docker-compose.yml"
+}
+
+// writeDeployAudit 写入部署操作审计记录，统一处理成功和失败路径。
+func (s *server) writeDeployAudit(appName, step, result, detail string) {
+	s.auditStore.RecordAudit(storage.AuditEvent{
+		ServerID:   "srv_remote_01",
+		ActionType: "app.deploy",
+		Target:     appName,
+		Risk:       "high",
+		Result:     result,
+		AfterState: fmt.Sprintf(`{"step":%q,"detail":%q}`, step, detail),
+	})
 }
 
 func riskOrder(r action.RiskLevel) int {

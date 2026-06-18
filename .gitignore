@@ -30,7 +30,7 @@ Thumbs.db
 # Secrets (local only)
 .env
 *.pem
-secret
+/secret
 !secret.example
 
 # Logs
