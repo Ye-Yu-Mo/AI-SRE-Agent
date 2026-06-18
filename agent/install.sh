@@ -20,6 +20,11 @@ echo "=== AI Server Agent Install ==="
 id -u "${AGENT_USER}" >/dev/null 2>&1 || \
   useradd --system --no-create-home --shell /usr/sbin/nologin "${AGENT_USER}"
 
+# Add to docker group for container access
+if getent group docker >/dev/null; then
+  usermod -aG docker "${AGENT_USER}" 2>/dev/null || true
+fi
+
 # 2. Create directories
 mkdir -p "${DATA_DIR}" "${CONF_DIR}" "${LOG_DIR}"
 chown "${AGENT_USER}:${AGENT_USER}" "${DATA_DIR}" "${LOG_DIR}"
@@ -41,6 +46,16 @@ else
   exit 1
 fi
 chmod 755 "${BIN_PATH}"
+
+# Docker Compose v2 wrapper
+if command -v docker >/dev/null 2>&1 && ! command -v docker-compose >/dev/null 2>&1; then
+  cat > /usr/local/bin/docker-compose <<'SHIM'
+#!/bin/sh
+exec docker compose "$@"
+SHIM
+  chmod 755 /usr/local/bin/docker-compose
+  echo "Created docker-compose wrapper for Docker Compose v2"
+fi
 
 # 4. Generate secret
 if [ -z "${AGENT_SECRET:-}" ]; then

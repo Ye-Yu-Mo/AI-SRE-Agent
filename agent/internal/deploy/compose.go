@@ -42,30 +42,43 @@ func ValidateCompose(dir, composeFile string) ComposeValidateResult {
 	}
 }
 
-// ComposeBuild 执行 docker-compose build
+var composeCmd = detectComposeCmd()
+
+func detectComposeCmd() string {
+	if _, err := exec.LookPath("docker"); err == nil {
+		// Docker Compose v2: docker compose
+		return "docker compose"
+	}
+	return "docker-compose"
+}
+
+// ComposeBuild 执行 docker compose build
 func ComposeBuild(ctx context.Context, dir, composeFile string) (stdout, stderr string, err error) {
-	args := []string{"-f", composeFile, "build"}
-	out, err := runCmd(ctx, dir, "docker-compose", args...)
+	args := strings.Split(composeCmd, " ")
+	args = append(args, "-f", composeFile, "build")
+	out, err := runCmd(ctx, dir, args[0], args[1:]...)
 	if err != nil {
 		return "", string(out), err
 	}
 	return string(out), "", nil
 }
 
-// ComposeUp 执行 docker-compose up -d
+// ComposeUp 执行 docker compose up -d
 func ComposeUp(ctx context.Context, dir, composeFile string) (stdout, stderr string, err error) {
-	args := []string{"-f", composeFile, "up", "-d", "--remove-orphans"}
-	out, err := runCmd(ctx, dir, "docker-compose", args...)
+	args := strings.Split(composeCmd, " ")
+	args = append(args, "-f", composeFile, "up", "-d", "--remove-orphans")
+	out, err := runCmd(ctx, dir, args[0], args[1:]...)
 	if err != nil {
 		return "", string(out), err
 	}
 	return string(out), "", nil
 }
 
-// ComposeDown 执行 docker-compose down
+// ComposeDown 执行 docker compose down
 func ComposeDown(ctx context.Context, dir, composeFile string) (stdout, stderr string, err error) {
-	args := []string{"-f", composeFile, "down", "--remove-orphans"}
-	out, err := runCmd(ctx, dir, "docker-compose", args...)
+	args := strings.Split(composeCmd, " ")
+	args = append(args, "-f", composeFile, "down", "--remove-orphans")
+	out, err := runCmd(ctx, dir, args[0], args[1:]...)
 	if err != nil {
 		return "", string(out), err
 	}
