@@ -8,8 +8,8 @@
 
 ```mermaid
 flowchart LR
-    A["AI Client<br/>(Claude Code)"] -->|"MCP stdio JSON-RPC"| B["MCP Server<br/>(Node.js)<br/>18 个 MCP tools"]
-    B -->|"HTTP + shared secret<br/>多服务器路由"| C["Server Agent<br/>(Go binary)<br/>systemd service"]
+    A["AI Client<br/>(Claude Code)"] -->|"MCP stdio JSON-RPC"| B["MCP Server<br/>(Node.js)<br/>20 个 MCP tools"]
+    B -->|"HTTP + shared secret<br/>servers.json 多服务器路由"| C["Server Agent<br/>(Go binary)<br/>systemd service"]
     C -->|"D-Bus / Docker socket / /proc"| D["Linux 服务器<br/>(Ubuntu 20.04+)"]
 ```
 
@@ -54,12 +54,16 @@ npm install && npm run build
 
 重启 Claude Code 即可使用。
 
-## MCP Tools（18 个）
+## MCP Tools（20 个）
 
-### 服务器状态（只读）
+### 服务器管理
 | Tool | 功能 |
 |------|------|
-| `server.list` | 列出已配置 Agent 服务器及在线状态（多服务器路由） |
+| `server.list` | 列出已注册 Agent 服务器及在线状态 |
+| `server.add` | 添加服务器到本地注册表（servers.json） |
+| `server.remove` | 从注册表删除服务器 |
+
+### 服务器状态（只读）
 | `server.inspect` | CPU/Mem/Disk/OS/Kernel/Arch/Ports |
 | `server.health` | 健康检查 + 告警列表 |
 | `server.resources` | 详细资源数值（百分比） |
@@ -126,17 +130,22 @@ npm install && npm run build
 
 ## 多服务器
 
-配置 `AGENT_ENDPOINTS` 环境变量即可路由多个 Agent：
+Server 列表存在 `mcp-server/servers.json`，无需在 `.mcp.json` 里拼环境变量：
 
 ```json
 {
-  "env": {
-    "AGENT_ENDPOINTS": "srv_01=http://1.2.3.4:9090,secret1;srv_02=http://5.6.7.8:9090,secret2"
-  }
+  "servers": [
+    {"id": "prod-01", "endpoint": "http://1.2.3.4:9090", "secret": "sec1"},
+    {"id": "prod-02", "endpoint": "http://5.6.7.8:9090", "secret": "sec2"}
+  ]
 }
 ```
 
-不配时自动回退到 `AGENT_ENDPOINT` 单服务器模式，向后兼容。
+也可通过 MCP tool 管理：
+- `server.add("prod-03", "http://...", "secret")` — 添加新服务器
+- `server.remove("prod-03")` — 删除服务器
+
+重启 Claude Code 后生效。
 
 ## Agent 更新
 

@@ -16,6 +16,23 @@
 
 ---
 
+## v0.6.0 — 2026-06-18
+
+### 新增
+
+- **servers.json 注册表**: 服务器列表持久化为 `mcp-server/servers.json`，不再需要手动编辑 `.mcp.json` 环境变量。支持 JSON 数组格式，清晰可读
+- **server.add / server.remove MCP tools**: 通过 MCP 工具管理服务器注册，无需手动编辑配置文件
+- **audit.search 优化**: `server_id` 参数改为可选，Agent 自动匹配自身 identity 返回审计记录
+
+### 修复
+
+- **Docker Compose v2 兼容**: 自动检测 `docker compose` vs `docker-compose`，install.sh 自动创建 wrapper
+- **Agent docker 组权限**: install.sh 自动 `usermod -aG docker`，避免容器列表为空
+- **审计 ServerID**: `writeDeployAudit` 从 Agent identity 读取 server_id，不再硬编码 `srv_remote_01`
+- **Web Console 数值格式化**: CPU/内存/磁盘百分比保留一位小数
+
+---
+
 ## v0.5.1 — 2026-06-18
 
 ### 新增
