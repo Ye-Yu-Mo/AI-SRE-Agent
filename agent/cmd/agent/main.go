@@ -839,8 +839,12 @@ func findComposeFile(dir string) string {
 
 // writeDeployAudit 写入部署操作审计记录，统一处理成功和失败路径。
 func (s *server) writeDeployAudit(appName, step, result, detail string) {
+	sid := "unknown"
+	if s.identity != nil {
+		sid = s.identity.ServerID
+	}
 	s.auditStore.RecordAudit(storage.AuditEvent{
-		ServerID:   "srv_remote_01",
+		ServerID:   sid,
 		ActionType: "app.deploy",
 		Target:     appName,
 		Risk:       "high",
