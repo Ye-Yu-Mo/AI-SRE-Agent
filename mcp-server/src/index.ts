@@ -10,12 +10,18 @@ import {
   applyHandler,
   applyDeployHandler,
   diagnoseWebsiteHandler,
+  serverListHandler,
 } from "./tools/server.js";
 
 const server = new McpServer({ name: "ai-server-agent", version: "1.0.0" });
 const client = (serverId?: string) => new AgentClient(serverId);
 
 // ── Read tools ──
+
+server.registerTool("server.list", {
+  description: "列出所有已配置的 Agent 服务器及其在线状态。",
+  inputSchema: {},
+}, serverListHandler);
 
 server.registerTool("server.inspect", {
   description: "查看服务器基本信息和资源使用情况。返回 CPU/Mem/Disk/OS/Kernel/Arch/Ports。",

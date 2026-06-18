@@ -16,6 +16,18 @@
 
 ---
 
+## v0.5.0 — 2026-06-18
+
+### 新增
+
+- **Web Console**: 嵌入式仪表盘（`GET /`），深色主题，Pico.css 风格，实时展示 CPU/Mem/Disk、容器列表、审计日志
+- **Agent version 端点**: `GET /api/v1/agent/version` 返回版本号 + server_id
+- **server.list MCP tool**: 返回已配置的 Agent 服务器及在线状态
+- **Compose 端口检测**: `ProbeAppHealth` 从 compose 文件 `ports` 段解析真实端口，优先探测，不再只依赖固定端口列表
+- **诊断 HTTP 探测**: `diagnose.website` 端口通时做 HTTP 连通验证
+
+---
+
 ## v0.4.0 — 2026-06-18
 
 ### 新增

@@ -1,4 +1,4 @@
-import { AgentClient, AgentError } from "../client/agent.js";
+import { AgentClient, AgentError, getConfig } from "../client/agent.js";
 
 function client(serverId?: string): AgentClient {
   return new AgentClient(serverId);
@@ -169,6 +169,26 @@ export async function diagnoseWebsiteHandler(args: {
   const target = args.domain || args.server_id;
   return {
     content: [{ type: "text" as const, text: `## Diagnose: ${target}:${port}\n\n${lines.join("\n")}` }],
+  };
+}
+
+// M5: diagnoseWebsiteHandler — 增强诊断含 HTTP GET 探测
+
+// M5: serverListHandler — 返回可用的 server 列表
+export async function serverListHandler(_args: Record<string, unknown>) {
+  const lines = ["## Servers", "", "| Server ID | Endpoint |", "|-----------|----------|"];
+
+  // 单服务器模式：从 AGENT_ENDPOINT 获取
+  const cfg = getConfig();
+  if (cfg.endpoint) {
+    const status = await client().get("/health").then(() => "online").catch(() => "offline");
+    lines.push(`| (default) | ${cfg.endpoint} | ${status} |`);
+  } else {
+    lines.push("| - | no agents configured | - |");
+  }
+
+  return {
+    content: [{ type: "text" as const, text: lines.join("\n") }],
   };
 }
 

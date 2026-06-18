@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -65,10 +68,17 @@ func probeHealthOnPorts(ports []int, timeout time.Duration) HealthResult {
 	return HealthResult{Status: HealthFailing}
 }
 
-// ProbeAppHealth 对运行中应用做实时健康探测，探测固定候选端口集合。
-// workDir 暂未使用，预留给后续从 compose 文件解析端口。
-func ProbeAppHealth(_ string, _ string) HealthResult {
-	return probeHealthOnPorts([]int{80, 8080, 8888, 3000, 5000}, 2*time.Second)
+// ProbeAppHealth 对运行中应用做实时健康探测。
+// workDir 指向应用的 compose 目录，用于读取 compose 文件获取端口映射；
+// 若无法解析则回退到固定候选端口列表。
+func ProbeAppHealth(appName, workDir string) HealthResult {
+	ports := fixedPorts
+	if workDir != "" {
+		if custom := readComposePorts(workDir); len(custom) > 0 {
+			ports = custom
+		}
+	}
+	return probeHealthOnPorts(ports, 2*time.Second)
 }
 
 // TCPHealthCheck 拨号检查端口可达
@@ -83,4 +93,65 @@ func TCPHealthCheck(host string, port int, timeout time.Duration) HealthResult {
 	conn.Close()
 
 	return HealthResult{Status: HealthPassing, LatencyMs: time.Since(start).Milliseconds()}
+}
+
+// fixedPorts 默认探测端口列表。ProbeAppHealth 优先使用 compose 文件中的端口。
+var fixedPorts = []int{80, 8080, 8888, 3000, 5000}
+
+// readComposePorts 从 workDir 读取 compose 文件，提取 ports 段中映射到 host 的端口。
+func readComposePorts(workDir string) []int {
+	for _, name := range []string{"compose.yaml", "docker-compose.yml", "docker-compose.yaml"} {
+		data, err := os.ReadFile(filepath.Join(workDir, name))
+		if err != nil {
+			continue
+		}
+		if ports := parseComposePorts(string(data)); len(ports) > 0 {
+			return ports
+		}
+	}
+	return nil
+}
+
+// parseComposePorts 从 YAML 内容中提取 host 端口。
+// 支持格式: "8080:80", "3000", "0.0.0.0:8080:80"。
+func parseComposePorts(content string) []int {
+	var ports []int
+	lines := strings.Split(content, "\n")
+	inPorts := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "ports:") {
+			inPorts = true
+			continue
+		}
+		if inPorts {
+			// 检测下一个顶级 key 或下一段缩进结束
+			if !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") && trimmed != "" {
+				if !strings.HasPrefix(trimmed, "-") {
+					inPorts = false
+					continue
+				}
+			}
+		}
+		if !inPorts {
+			continue
+		}
+		// 端口行: - "8080:80" 或 - 8080:80 或 - "80"
+		val := strings.Trim(trimmed, "- \"")
+		// 去掉方案前缀如 "8080:80/tcp"或引号
+		val = strings.SplitN(val, "/", 2)[0]
+		// 取第一个冒号前的端口（host 端口）："8080:80" → 8080, "80" → 80
+		parts := strings.SplitN(val, ":", 2)
+		hostPort, err := strconv.Atoi(parts[0])
+		if err != nil {
+			continue
+		}
+		if hostPort > 0 && hostPort < 65536 {
+			ports = append(ports, hostPort)
+		}
+	}
+	return ports
 }

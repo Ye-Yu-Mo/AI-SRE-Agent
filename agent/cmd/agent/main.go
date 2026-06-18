@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	_ "embed"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -123,6 +124,12 @@ func run(cfg *Config) error {
 	return nil
 }
 
+// Version 编译时通过 ldflags 注入
+var Version = "dev"
+
+//go:embed console/index.html
+var consoleHTML string
+
 type server struct {
 	cfg         *Config
 	identity    *identity.Identity
@@ -142,7 +149,22 @@ func newServer(cfg *Config, id *identity.Identity, planStore *plan.Store, auditS
 		jsonOK(w, map[string]string{"status": "ok"})
 	})
 
+	// Web Console — 嵌入式仪表盘
+	if consoleHTML != "" {
+		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/" {
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Write([]byte(consoleHTML))
+		})
+	}
+
 	apiMux := http.NewServeMux()
+	apiMux.HandleFunc("/api/v1/agent/version", func(w http.ResponseWriter, r *http.Request) {
+		jsonOK(w, map[string]interface{}{"version": Version, "server_id": id.ServerID})
+	})
 	apiMux.HandleFunc("/api/v1/identity", func(w http.ResponseWriter, r *http.Request) {
 		s.handleIdentity(w)
 	})

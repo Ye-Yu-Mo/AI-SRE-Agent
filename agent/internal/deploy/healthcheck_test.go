@@ -51,3 +51,60 @@ func TestProbeHealthOnPorts_AllClosed(t *testing.T) {
 		t.Errorf("Status = %q, want failing", r.Status)
 	}
 }
+
+// M5: parseComposePorts 从 compose 文件提取 host 端口。
+func TestParseComposePorts(t *testing.T) {
+	cases := []struct {
+		name     string
+		content  string
+		want     []int
+	}{
+		{
+			name: "simple port mapping",
+			content: `services:
+  web:
+    ports:
+      - "8080:80"`,
+			want: []int{8080},
+		},
+		{
+			name: "multiple ports",
+			content: `services:
+  app:
+    ports:
+      - "3000:3000"
+      - "443:443"`,
+			want: []int{3000, 443},
+		},
+		{
+			name: "no ports section",
+			content: `services:
+  app:
+    image: nginx`,
+			want: nil,
+		},
+		{
+			name: "short syntax",
+			content: `services:
+  web:
+    ports:
+      - "80"`,
+			want: []int{80},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseComposePorts(tc.content)
+			if len(got) != len(tc.want) {
+				t.Errorf("parseComposePorts = %v, want %v", got, tc.want)
+				return
+			}
+			for i, p := range tc.want {
+				if got[i] != p {
+					t.Errorf("port[%d] = %d, want %d", i, got[i], p)
+				}
+			}
+		})
+	}
+}
+

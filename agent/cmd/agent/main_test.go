@@ -256,3 +256,61 @@ func TestIdentityEndpoint(t *testing.T) {
 		t.Error("identity response missing hostname")
 	}
 }
+
+// M5: version 端点返回编译时注入的版本号。
+func TestAgentVersion(t *testing.T) {
+	ln, cleanup := testServer(t)
+	defer cleanup()
+
+	req, _ := http.NewRequest("GET", url(ln, "/api/v1/agent/version"), nil)
+	req.Header.Set("Authorization", "Bearer test-secret")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET version: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET version: status %d, want 200", resp.StatusCode)
+	}
+
+	var v map[string]any
+	json.NewDecoder(resp.Body).Decode(&v)
+
+	ver, _ := v["version"].(string)
+	if ver == "" {
+		t.Error("version response missing version field")
+	}
+}
+
+// M5: Web Console 返回 HTML 页面（非 JSON）。
+func TestWebConsole(t *testing.T) {
+	ln, cleanup := testServer(t)
+	defer cleanup()
+
+	req, _ := http.NewRequest("GET", url(ln, "/"), nil)
+	req.Header.Set("Authorization", "Bearer test-secret")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /: status %d, want 200", resp.StatusCode)
+	}
+
+	ct := resp.Header.Get("Content-Type")
+	if ct == "" || !stringsContains(ct, "text/html") {
+		t.Errorf("Content-Type = %q, want text/html", ct)
+	}
+}
+
+func stringsContains(s, sub string) bool {
+	for i := 0; i <= len(s)-len(sub); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}

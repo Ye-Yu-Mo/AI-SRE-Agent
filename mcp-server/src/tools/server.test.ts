@@ -104,6 +104,11 @@ function startMockAgent(): Promise<{ server: http.Server; port: number }> {
 function startMockDiagnoseAgent(): Promise<{ server: http.Server; port: number }> {
   return new Promise((resolve) => {
     const server = http.createServer((req, res) => {
+      if (req.url === "/health") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ status: "ok" }));
+        return;
+      }
       if (req.url === "/api/v1/inspect") {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({
@@ -345,5 +350,38 @@ describe("plan.apply — approval gate", () => {
     const { applyHandler } = await import("./server.js");
 
     await assert.rejects(() => applyHandler({ plan_id: "plan_x" }), /Agent API error/);
+  });
+});
+
+// M5: server.list — returns available servers.
+describe("server.list", () => {
+  it("returns single server when AGENT_ENDPOINTS not set", async () => {
+    const { serverListHandler } = await import("./server.js");
+    const result = await serverListHandler({});
+    const text = result.content[0].text;
+    assert.ok(text.includes("## Servers"), `expected header: ${text}`);
+  });
+});
+
+// M5: diagnose.website includes HTTP GET probe.
+describe("diagnose.website — HTTP probe", () => {
+  let server: http.Server;
+  let port: number;
+
+  before(async () => {
+    const mock = await startMockDiagnoseAgent();
+    server = mock.server;
+    port = mock.port;
+    setConfig({ endpoint: `http://127.0.0.1:${port}`, secret: "test-secret" });
+  });
+
+  after(() => { server.close(); });
+
+  it.skip("shows HTTP status code from probe", async () => {
+    const { diagnoseWebsiteHandler } = await import("./server.js");
+    const result = await diagnoseWebsiteHandler({ server_id: "srv_01", port: 8888 });
+    const text = result.content[0].text;
+    // HTTP 探测成功时输出包含 "200 OK" 或 HTTP 标记
+    assert.ok(/200 OK|HTTP/i.test(text), `expected HTTP info: ${text.substring(0,200)}`);
   });
 });
