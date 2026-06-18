@@ -935,10 +935,11 @@ func (s *server) writeDeployAudit(appName, step, result, detail string) {
 func (s *server) handleDockerfileDeploy(w http.ResponseWriter, r *http.Request, appName, workDir, domain string, files []string) {
 	ctx := r.Context()
 	dockerfile := findDockerfile(workDir, files)
+	buildDir := filepath.Dir(dockerfile)
 
 	// docker build
 	tag := appName + ":latest"
-	buildCmd := exec.CommandContext(ctx, "docker", "build", "-t", tag, "-f", dockerfile, workDir)
+	buildCmd := exec.CommandContext(ctx, "docker", "build", "-t", tag, "-f", dockerfile, buildDir)
 	buildOut, buildErr := buildCmd.CombinedOutput()
 	if buildErr != nil {
 		os.RemoveAll(workDir)
@@ -991,8 +992,8 @@ func (s *server) handleDockerfileDeploy(w http.ResponseWriter, r *http.Request, 
 
 func findDockerfile(workDir string, files []string) string {
 	for _, f := range files {
-		if f == "Dockerfile" {
-			return filepath.Join(workDir, "Dockerfile")
+		if strings.HasSuffix(f, "Dockerfile") || f == "Dockerfile" {
+			return filepath.Join(workDir, f)
 		}
 	}
 	return filepath.Join(workDir, "Dockerfile")

@@ -35,11 +35,32 @@ var knownFiles = map[string]struct {
 
 func Detect(dir string) DetectResult {
 	r := DetectResult{Runtime: RuntimeUnknown}
+	hasDockerfile := false
 	for name, info := range knownFiles {
 		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
 			r.Files = append(r.Files, name)
 			if info.weight > 0 && (r.Runtime == RuntimeUnknown || info.weight >= 2) {
 				r.Runtime = info.runtime
+			}
+			if name == "Dockerfile" {
+				hasDockerfile = true
+			}
+		}
+	}
+	// 根目录没找到 Dockerfile，walk 一层子目录
+	if !hasDockerfile {
+		entries, _ := os.ReadDir(dir)
+		for _, e := range entries {
+			if !e.IsDir() || e.Name()[0] == '.' {
+				continue
+			}
+			subDir := filepath.Join(dir, e.Name())
+			if _, err := os.Stat(filepath.Join(subDir, "Dockerfile")); err == nil {
+				r.Files = append(r.Files, filepath.Join(e.Name(), "Dockerfile"))
+				if r.Runtime == RuntimeUnknown {
+					r.Runtime = RuntimeDockerfile
+				}
+				break
 			}
 		}
 	}
