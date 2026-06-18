@@ -16,6 +16,23 @@
 
 ---
 
+## v0.4.0 — 2026-06-18
+
+### 新增
+
+- **Caddy 反向代理 + TLS**: 部署带 `domain` 参数时自动创建 Caddy route，HTTPS 自动签发（Let's Encrypt）。不带 domain 时行为不变，向后兼容
+- **多服务器路由**: MCP `AgentClient` 支持 `AGENT_ENDPOINTS` 环境变量按 `server_id` 路由到不同 Agent。不配时回退到 `AGENT_ENDPOINT` 单服务器模式
+- **Agent identity 端点**: `GET /api/v1/identity` 返回 `server_id` + `hostname`，为多服务器架构提供基础
+- **healthcheck 端口暴露**: `current_health` 新增 `port` 字段，标示健康探测命中的端口
+
+### 技术债清理
+
+- **Secret 脱敏**: `service.logs` 和 `docker.logs` 输出自动脱敏密码/API Key/Token
+- **Deploy 失败审计**: 所有部署失败路径（clone/detect/validate/build/up）写入 audit log
+- **gitignore 修复**: `/secret` 模式不再误屏蔽 `agent/internal/secret/` 目录
+
+---
+
 ## v0.3.0 — 2026-06-18
 
 ### 新增

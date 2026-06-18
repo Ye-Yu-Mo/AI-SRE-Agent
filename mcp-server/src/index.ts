@@ -13,7 +13,7 @@ import {
 } from "./tools/server.js";
 
 const server = new McpServer({ name: "ai-server-agent", version: "1.0.0" });
-const client = () => new AgentClient();
+const client = (serverId?: string) => new AgentClient(serverId);
 
 // ── Read tools ──
 
@@ -36,7 +36,7 @@ server.registerTool("service.list", {
   description: "列出所有 systemd 服务及其运行状态。",
   inputSchema: { server_id: z.string().describe("目标服务器 ID") },
 }, async (args) => {
-  const d = await client().get("/api/v1/services");
+  const d = await client(args.server_id).get("/api/v1/services");
   const svcs = d.services || [];
   return { content: [{ type: "text", text: `## Services (${svcs.length})\n| Service | Status |\n|---------|--------|\n${svcs.map((s: any) => `| ${s.name} | ${s.status} |`).join("\n")}` }], structuredContent: d };
 });
@@ -49,7 +49,7 @@ server.registerTool("service.logs", {
     lines: z.number().optional().describe("行数，默认 50"),
   },
 }, async (args) => {
-  const d = await client().get(`/api/v1/services/${args.service_name}/logs?lines=${args.lines || 50}`);
+  const d = await client(args.server_id).get(`/api/v1/services/${args.service_name}/logs?lines=${args.lines || 50}`);
   return { content: [{ type: "text", text: `## ${args.service_name} logs\n\`\`\`\n${(d.lines || []).join("\n")}\n\`\`\`` }], structuredContent: d };
 });
 
@@ -59,7 +59,7 @@ server.registerTool("docker.list", {
   description: "列出所有 Docker 容器及其状态（running/stopped/restarting）。",
   inputSchema: { server_id: z.string().describe("目标服务器 ID") },
 }, async (args) => {
-  const d = await client().get("/api/v1/docker/containers");
+  const d = await client(args.server_id).get("/api/v1/docker/containers");
   const containers = d.containers || [];
   const text = [
     `## Docker Containers (${containers.length})`,
@@ -79,7 +79,7 @@ server.registerTool("docker.logs", {
     lines: z.number().optional().describe("行数，默认 50"),
   },
 }, async (args) => {
-  const d = await client().get(`/api/v1/docker/containers/${args.container_name}/logs?lines=${args.lines || 50}`);
+  const d = await client(args.server_id).get(`/api/v1/docker/containers/${args.container_name}/logs?lines=${args.lines || 50}`);
   return { content: [{ type: "text", text: `## ${args.container_name} logs\n\`\`\`\n${(d.lines || []).join("\n")}\n\`\`\`` }], structuredContent: d };
 });
 
@@ -87,7 +87,7 @@ server.registerTool("docker.plan_restart", {
   description: "生成重启 Docker 容器的计划。不会直接执行，返回 plan_id 后需调用 plan.apply。",
   inputSchema: { server_id: z.string(), container_name: z.string().describe("容器名，如 'myapp_web_1'") },
 }, async (args) => {
-  const d = await client().post("/api/v1/plans", {
+  const d = await client(args.server_id).post("/api/v1/plans", {
     server_id: args.server_id, intent: `restart container ${args.container_name}`,
     actions: [{ type: "docker.restart", target: { kind: "docker_container", name: args.container_name } }],
   });
@@ -112,6 +112,7 @@ server.registerTool("plan.apply", {
   inputSchema: {
     plan_id: z.string().describe("plan ID，从 service.plan_restart 等返回"),
     confirm: z.boolean().optional().describe("用户已明确确认高风险操作时传 true"),
+    server_id: z.string().optional().describe("目标服务器 ID"),
   },
 }, applyHandler);
 
@@ -129,7 +130,7 @@ server.registerTool("audit.search", {
   params.set("server_id", args.server_id);
   if (args.action_type) params.set("action_type", args.action_type);
   if (args.result) params.set("result", args.result);
-  const d = await client().get(`/api/v1/audit?${params}`);
+  const d = await client(args.server_id).get(`/api/v1/audit?${params}`);
   const events = d.events || [];
   const text = `## Audit Log (${d.total})\n| Time | Action | Target | Result |\n|------|--------|--------|--------|\n${events.map((e: any) => `| ${e.created_at} | ${e.action_type} | ${e.target} | ${e.result} |`).join("\n")}`;
   return { content: [{ type: "text", text }], structuredContent: d };
@@ -147,7 +148,7 @@ server.registerTool("app.plan_deploy", {
     app_name: z.string().optional().describe("应用名称"),
   },
 }, async (args) => {
-  const d = await client().post("/api/v1/deploy/plan", {
+  const d = await client(args.server_id).post("/api/v1/deploy/plan", {
     server_id: args.server_id, repo_url: args.repo_url,
     branch: args.branch || "main", domain: args.domain || "", app_name: args.app_name || "",
   });
@@ -158,27 +159,29 @@ server.registerTool("app.apply_deploy", {
   description: "执行部署：clone → build → up → healthcheck → release（反向代理/域名配置规划中）。高风险 compose 配置（privileged/docker.sock/root mount）首次调用会返回风险拦截卡片——必须先把卡片展示给用户、获得明确确认后，才能带 confirm=true 重试。不得在用户未确认时自行带 confirm。",
   inputSchema: {
     plan_id: z.string().optional().describe("plan ID"),
+    server_id: z.string().optional().describe("目标服务器 ID"),
     repo_url: z.string().describe("GitHub repo URL"),
     branch: z.string().optional().describe("分支"),
     app_name: z.string().optional().describe("应用名称"),
+    domain: z.string().optional().describe("域名"),
     confirm: z.boolean().optional().describe("用户已审阅 supply chain 风险并明确确认时传 true"),
   },
 }, applyDeployHandler);
 
 server.registerTool("app.status", {
   description: "查询已部署应用的状态和当前 release 信息。",
-  inputSchema: { app_name: z.string().describe("应用名称") },
+  inputSchema: { app_name: z.string().describe("应用名称"), server_id: z.string().optional().describe("目标服务器 ID") },
 }, async (args) => {
-  const d = await client().get(`/api/v1/apps/${args.app_name}`);
+  const d = await client(args.server_id).get(`/api/v1/apps/${args.app_name}`);
   const r = d.release || {};
   return { content: [{ type: "text", text: `## ${args.app_name}\n| Field | Value |\n|-------|-------|\n| Release | ${r.release_id || "-"} |\n| Status | ${r.status || "-"} |\n| Commit | ${(r.commit || "").slice(0, 8)} |\n| Healthcheck | ${r.healthcheck_status || "-"} |` }], structuredContent: d };
 });
 
 server.registerTool("app.rollback", {
   description: "回滚应用到上一个版本。停止当前容器，checkout 旧 commit，重建并启动。",
-  inputSchema: { app_name: z.string().describe("应用名称") },
+  inputSchema: { app_name: z.string().describe("应用名称"), server_id: z.string().optional().describe("目标服务器 ID") },
 }, async (args) => {
-  const d = await client().post(`/api/v1/apps/${args.app_name}/rollback`, {});
+  const d = await client(args.server_id).post(`/api/v1/apps/${args.app_name}/rollback`, {});
   return { content: [{ type: "text", text: `## Rollback: ${d.status}\n${d.error ? `Error: ${d.error}` : `Restored to previous version.`}` }], structuredContent: d };
 });
 
@@ -199,7 +202,7 @@ server.registerTool("server.graph", {
   description: "查看服务器 State Graph — 应用/容器/端口/反向代理的拓扑依赖关系。用于理解'谁依赖谁'、'哪个组件坏了会影响什么'。",
   inputSchema: { server_id: z.string().describe("目标服务器 ID") },
 }, async (args) => {
-  const g = await client().get("/api/v1/graph");
+  const g = await client(args.server_id).get("/api/v1/graph");
   const nodes = g.nodes || [];
   const edges = g.edges || [];
   const text = [

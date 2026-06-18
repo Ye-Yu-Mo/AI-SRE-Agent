@@ -1,11 +1,11 @@
 import { AgentClient, AgentError } from "../client/agent.js";
 
-function client(): AgentClient {
-  return new AgentClient();
+function client(serverId?: string): AgentClient {
+  return new AgentClient(serverId);
 }
 
 export async function inspectHandler(args: { server_id: string }) {
-  const data = await client().get("/api/v1/inspect");
+  const data = await client(args.server_id).get("/api/v1/inspect");
 
   const text = [
     `## Server: ${data.hostname}`,
@@ -27,7 +27,7 @@ export async function inspectHandler(args: { server_id: string }) {
 }
 
 export async function healthHandler(args: { server_id: string }) {
-  const data = await client().get("/api/v1/health");
+  const data = await client(args.server_id).get("/api/v1/health");
 
   const warnings = data.warnings?.length
     ? data.warnings.map((w: string) => `- ⚠️ ${w}`).join("\n")
@@ -47,7 +47,7 @@ export async function healthHandler(args: { server_id: string }) {
 }
 
 export async function resourcesHandler(args: { server_id: string }) {
-  const data = await client().get("/api/v1/resources");
+  const data = await client(args.server_id).get("/api/v1/resources");
 
   const text = [
     `## Resources`,
@@ -66,7 +66,7 @@ export async function resourcesHandler(args: { server_id: string }) {
 }
 
 export async function planRestartHandler(args: { server_id: string; service_name: string }) {
-  const data = await client().post("/api/v1/plans", {
+  const data = await client(args.server_id).post("/api/v1/plans", {
     server_id: args.server_id,
     intent: `restart ${args.service_name}`,
     actions: [
@@ -98,9 +98,9 @@ export async function planRestartHandler(args: { server_id: string; service_name
 
 // M2: applyHandler — 接住 409（需审批），返回知情确认卡片，不抛异常。
 // 其他错误（500/404）照常上抛。
-export async function applyHandler(args: { plan_id: string; confirm?: boolean }) {
+export async function applyHandler(args: { plan_id: string; confirm?: boolean; server_id?: string }) {
   try {
-    const d = await client().post(`/api/v1/plans/${args.plan_id}/apply`, {
+    const d = await client(args.server_id).post(`/api/v1/plans/${args.plan_id}/apply`, {
       approve: args.confirm === true,
     });
     const results = d.results || [];
@@ -131,7 +131,7 @@ export async function diagnoseWebsiteHandler(args: {
   const lines: string[] = [];
 
   // 端口状态
-  const d = await client().get("/api/v1/inspect");
+  const d = await client(args.server_id).get("/api/v1/inspect");
   const ports: any[] = d.listening_ports || [];
   const found = ports.find((p: any) => p.port === port);
   lines.push(`**Port ${port}:** ${found ? `✅ LISTEN (${found.process || "-"})` : "❌ NOT LISTENING"}`);
@@ -139,7 +139,7 @@ export async function diagnoseWebsiteHandler(args: {
   // 容器列表 — 每个容器独立一行，不再只报数量
   let containers: any[] = [];
   try {
-    const ctn = await client().get("/api/v1/docker/containers");
+    const ctn = await client(args.server_id).get("/api/v1/docker/containers");
     containers = ctn.containers || [];
   } catch { /* docker 不可用时跳过 */ }
 
@@ -181,9 +181,10 @@ export async function applyDeployHandler(args: {
   branch?: string;
   app_name?: string;
   confirm?: boolean;
+  server_id?: string;
 }) {
   try {
-    const d = await client().post("/api/v1/deploy/apply", {
+    const d = await client(args.server_id).post("/api/v1/deploy/apply", {
       plan_id: args.plan_id || "plan",
       repo_url: args.repo_url,
       branch: args.branch || "main",

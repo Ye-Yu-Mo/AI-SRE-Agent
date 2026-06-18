@@ -86,7 +86,8 @@ func main() {
 
 func run(cfg *Config) error {
 	// 初始化 identity
-	if _, err := identity.New(cfg.Dir); err != nil {
+	id, err := identity.New(cfg.Dir)
+	if err != nil {
 		return fmt.Errorf("identity: %w", err)
 	}
 
@@ -103,7 +104,7 @@ func run(cfg *Config) error {
 	deployStore := deploy.NewReleaseStore()
 	// 从磁盘恢复已有的 releases
 	deployStore.LoadFromDisk(filepath.Join(cfg.Dir, "data", "releases.jsonl"))
-	srv := newServer(cfg, planStore, auditStore, deployStore, ln)
+	srv := newServer(cfg, id, planStore, auditStore, deployStore, ln)
 
 	// 信号处理
 	sigCh := make(chan os.Signal, 1)
@@ -124,6 +125,7 @@ func run(cfg *Config) error {
 
 type server struct {
 	cfg         *Config
+	identity    *identity.Identity
 	planStore   *plan.Store
 	auditStore  *storage.Store
 	deployStore *deploy.ReleaseStore
@@ -131,8 +133,8 @@ type server struct {
 	dockerExec  *executor.DockerExecutor
 }
 
-func newServer(cfg *Config, planStore *plan.Store, auditStore *storage.Store, deployStore *deploy.ReleaseStore, ln net.Listener) *http.Server {
-	s := &server{cfg: cfg, planStore: planStore, auditStore: auditStore, deployStore: deployStore,
+func newServer(cfg *Config, id *identity.Identity, planStore *plan.Store, auditStore *storage.Store, deployStore *deploy.ReleaseStore, ln net.Listener) *http.Server {
+	s := &server{cfg: cfg, identity: id, planStore: planStore, auditStore: auditStore, deployStore: deployStore,
 		sysExec: &executor.SystemdExecutor{}, dockerExec: &executor.DockerExecutor{}}
 	mux := http.NewServeMux()
 
@@ -141,6 +143,9 @@ func newServer(cfg *Config, planStore *plan.Store, auditStore *storage.Store, de
 	})
 
 	apiMux := http.NewServeMux()
+	apiMux.HandleFunc("/api/v1/identity", func(w http.ResponseWriter, r *http.Request) {
+		s.handleIdentity(w)
+	})
 	apiMux.HandleFunc("/api/v1/inspect", func(w http.ResponseWriter, r *http.Request) {
 		s.handleInspect(w, r)
 	})
@@ -190,6 +195,19 @@ func newServer(cfg *Config, planStore *plan.Store, auditStore *storage.Store, de
 	mux.Handle("/api/", authMiddleware(cfg.Secret, apiMux))
 
 	return &http.Server{Handler: mux}
+}
+
+func (s *server) handleIdentity(w http.ResponseWriter) {
+	sid := "unknown"
+	host := "unknown"
+	if s.identity != nil {
+		sid = s.identity.ServerID
+		host = s.identity.Hostname
+	}
+	jsonOK(w, map[string]interface{}{
+		"server_id": sid,
+		"hostname":  host,
+	})
 }
 
 func (s *server) handleInspect(w http.ResponseWriter, _ *http.Request) {
@@ -685,10 +703,19 @@ func (s *server) handleDeployApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Step 6: healthcheck — 用 ProbeAppHealth 统一探测逻辑（与 app.status 复用同一函数）
+	// Step 6: healthcheck
 	hc := deploy.ProbeAppHealth(appName, workDir)
 
-	// Step 7: compose 快照 — 存入 release record，供 rollback 恢复配置
+	// Step 6.5: Caddy reverse proxy — 仅当用户提供了 domain 且健康检查通过
+	if req.Domain != "" && hc.Status == deploy.HealthPassing && hc.Port > 0 {
+		if err := deploy.ConfigureCaddy(req.Domain, strconv.Itoa(hc.Port)); err != nil {
+			log.Printf("deploy %s: caddy configure for %s (port %d): %v", appName, req.Domain, hc.Port, err)
+		} else {
+			log.Printf("deploy %s: caddy route created: %s → localhost:%d", appName, req.Domain, hc.Port)
+		}
+	}
+
+	// Step 7: compose 快照
 	var composeSnap string
 	if data, err := os.ReadFile(filepath.Join(workDir, composeFile)); err == nil {
 		composeSnap = base64.StdEncoding.EncodeToString(data)
@@ -763,6 +790,9 @@ func (s *server) handleApp(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.deployStore.SaveToDisk(filepath.Join(s.cfg.Dir, "data", "releases.jsonl"))
+
+		// 如果之前配置了 domain 的 caddy route，移除回退
+		_ = deploy.RemoveCaddyRoute(appName + ".com")
 
 		hc := deploy.HTTPHealthCheck("http://localhost:80", 0, 10*time.Second)
 		jsonOK(w, map[string]interface{}{

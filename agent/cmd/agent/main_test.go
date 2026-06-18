@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ai-sre/agent/internal/deploy"
+	"github.com/ai-sre/agent/internal/identity"
 	"github.com/ai-sre/agent/internal/plan"
 	"github.com/ai-sre/agent/internal/storage"
 )
@@ -37,7 +38,7 @@ func TestServerStartupAndHealth(t *testing.T) {
 		Secret: "test-secret",
 	}
 	auditStore, _ := storage.NewStore(t.TempDir())
-	srv := newServer(cfg, plan.NewStore(), auditStore, deploy.NewReleaseStore(), ln)
+	srv := newServer(cfg, nil, plan.NewStore(), auditStore, deploy.NewReleaseStore(), ln)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -62,9 +63,15 @@ func TestServerStartupAndHealth(t *testing.T) {
 func testServer(t *testing.T) (net.Listener, func()) {
 	t.Helper()
 	ln := listen(t)
-	cfg := &Config{Dir: t.TempDir(), Secret: "test-secret"}
+	dir := t.TempDir()
+	// 创建真实的 identity 文件供测试使用
+	id, err := identity.New(dir)
+	if err != nil {
+		t.Fatalf("identity.New: %v", err)
+	}
+	cfg := &Config{Dir: dir, Secret: "test-secret"}
 	auditStore, _ := storage.NewStore(t.TempDir())
-	srv := newServer(cfg, plan.NewStore(), auditStore, deploy.NewReleaseStore(), ln)
+	srv := newServer(cfg, id, plan.NewStore(), auditStore, deploy.NewReleaseStore(), ln)
 	go func() { _ = srv.Serve(ln) }()
 	time.Sleep(100 * time.Millisecond)
 	return ln, func() { srv.Shutdown(context.Background()) }
@@ -178,7 +185,7 @@ func TestServerSecretRejection(t *testing.T) {
 		Secret: "correct-secret",
 	}
 	auditStore, _ := storage.NewStore(t.TempDir())
-	srv := newServer(cfg, plan.NewStore(), auditStore, deploy.NewReleaseStore(), ln)
+	srv := newServer(cfg, nil, plan.NewStore(), auditStore, deploy.NewReleaseStore(), ln)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -214,4 +221,38 @@ func TestServerSecretRejection(t *testing.T) {
 	}
 
 	srv.Shutdown(ctx)
+}
+
+// M4: identity 端点返回 server_id 和 hostname，供多服务器路由使用。
+func TestIdentityEndpoint(t *testing.T) {
+	ln, cleanup := testServer(t)
+	defer cleanup()
+
+	req, _ := http.NewRequest("GET", url(ln, "/api/v1/identity"), nil)
+	req.Header.Set("Authorization", "Bearer test-secret")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET identity: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET identity: status %d, want 200", resp.StatusCode)
+	}
+
+	var id map[string]any
+	json.NewDecoder(resp.Body).Decode(&id)
+
+	sid, _ := id["server_id"].(string)
+	if sid == "" {
+		t.Error("identity response missing server_id")
+	}
+	if len(sid) < 4 || sid[:4] != "srv_" {
+		t.Errorf("server_id should start with srv_, got %q", sid)
+	}
+
+	host, _ := id["hostname"].(string)
+	if host == "" {
+		t.Error("identity response missing hostname")
+	}
 }

@@ -21,6 +21,7 @@ type HealthResult struct {
 	Status     HealthStatus `json:"status"`
 	LatencyMs  int64        `json:"latency_ms,omitempty"`
 	StatusCode int          `json:"status_code,omitempty"`
+	Port       int          `json:"port,omitempty"`
 	Error      string       `json:"error,omitempty"`
 }
 
@@ -56,6 +57,7 @@ func probeHealthOnPorts(ports []int, timeout time.Duration) HealthResult {
 	for _, port := range ports {
 		url := fmt.Sprintf("http://localhost:%d", port)
 		r := HTTPHealthCheck(url, 0, timeout)
+		r.Port = port
 		if r.Status == HealthPassing {
 			return r
 		}
