@@ -39,14 +39,22 @@ jobs:
           go-version: "1.24"
       - name: Build
         working-directory: agent
+        id: build
         run: |
-          GOOS=linux GOARCH=${{ matrix.arch }} go build -o ai-server-agent-${{ matrix.arch }} ./cmd/agent/
-          ls -lh ai-server-agent-${{ matrix.arch }}
+          VERSION=${GITHUB_REF#refs/tags/}
+          if [ "${{ matrix.arch }}" = "amd64" ]; then
+            OUT=ai-server-agent
+          else
+            OUT=ai-server-agent-${{ matrix.arch }}
+          fi
+          GOOS=linux GOARCH=${{ matrix.arch }} go build -ldflags "-X main.Version=${VERSION}" -o ${OUT} ./cmd/agent/
+          ls -lh ${OUT}
+          echo "binary=${OUT}" >> $GITHUB_OUTPUT
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
           name: ai-server-agent-${{ matrix.arch }}
-          path: agent/ai-server-agent-${{ matrix.arch }}
+          path: agent/${{ steps.build.outputs.binary }}
 
   release:
     needs: build
@@ -57,6 +65,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            ai-server-agent-amd64/ai-server-agent-amd64
+            ai-server-agent-amd64/ai-server-agent
             ai-server-agent-arm64/ai-server-agent-arm64
           generate_release_notes: true
