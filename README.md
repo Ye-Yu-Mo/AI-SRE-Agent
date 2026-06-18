@@ -8,10 +8,12 @@
 
 ```mermaid
 flowchart LR
-    A["AI Client<br/>(Claude Code)"] -->|"MCP stdio JSON-RPC"| B["MCP Server<br/>(Node.js)<br/>17 个 MCP tools"]
-    B -->|"HTTP + shared secret"| C["Server Agent<br/>(Go binary)<br/>systemd service"]
-    C -->|"D-Bus / Docker socket / /proc"| D["Linux 服务器<br/>(Ubuntu 22.04+)"]
+    A["AI Client<br/>(Claude Code)"] -->|"MCP stdio JSON-RPC"| B["MCP Server<br/>(Node.js)<br/>18 个 MCP tools"]
+    B -->|"HTTP + shared secret<br/>多服务器路由"| C["Server Agent<br/>(Go binary)<br/>systemd service"]
+    C -->|"D-Bus / Docker socket / /proc"| D["Linux 服务器<br/>(Ubuntu 20.04+)"]
 ```
+
+Agent 同时提供 Web Console（`GET /`），浏览器可直接访问仪表盘。
 
 ## 快速开始
 
@@ -52,11 +54,12 @@ npm install && npm run build
 
 重启 Claude Code 即可使用。
 
-## MCP Tools（17 个）
+## MCP Tools（18 个）
 
 ### 服务器状态（只读）
 | Tool | 功能 |
 |------|------|
+| `server.list` | 列出已配置 Agent 服务器及在线状态（多服务器路由） |
 | `server.inspect` | CPU/Mem/Disk/OS/Kernel/Arch/Ports |
 | `server.health` | 健康检查 + 告警列表 |
 | `server.resources` | 详细资源数值（百分比） |
@@ -86,14 +89,14 @@ npm install && npm run build
 | Tool | 功能 |
 |------|------|
 | `app.plan_deploy` | 生成部署计划（检测运行时、评估风险） |
-| `app.apply_deploy` | 执行部署：clone → build → up → healthcheck → release。危险 compose 配置（privileged/docker.sock/root mount）触发 409 风险卡片，需用户确认后带 `confirm=true` 重试（反向代理/域名配置规划中） |
-| `app.status` | 查看应用状态和当前 release 信息 |
-| `app.rollback` | 回滚到上一版本 |
+| `app.apply_deploy` | 执行部署：clone → build → up → healthcheck → Caddy proxy → release。危险 compose 配置触发 409 风险卡片 |
+| `app.status` | 查看应用状态、release 信息，含 `current_health` 实时健康探测（与历史 `healthcheck_status` 快照分离） |
+| `app.rollback` | 回滚到上一版本，恢复 compose 快照 + 重建容器 |
 
 ### 故障诊断
 | Tool | 功能 |
 |------|------|
-| `diagnose.website` | 诊断网站不可访问（端口/容器/代理） |
+| `diagnose.website` | 诊断网站不可访问：端口监听 + HTTP 探测 + 容器状态 + 异常容器定位 |
 
 ## 安全原则
 
@@ -103,34 +106,76 @@ npm install && npm run build
 | Plan/Apply 分离 | 有副作用的操作先生成计划，审批后执行 |
 | 风险分级 | typed action 硬编码分级：critical 直接拒绝，high 需显式审批 |
 | 危险操作拒绝 | 停止生产数据库等不可逆操作判 critical，在 plan 创建阶段拦截 |
-| Supply chain 拦截 | 部署前扫描 compose：privileged/docker.sock/root mount/host network 触发 409，需用户确认才放行 |
-| 全量审计 | 每次写操作记录 before/after state、stdout/stderr |
-| 部署可回滚 | 每次部署创建 release record，失败可一键回滚 |
+| Supply chain 拦截 | 部署前扫描 compose：privileged/docker.sock/root mount/host network 触发 409 |
+| Secret 脱敏 | 日志输出自动掩码 PASSWORD/API_KEY/TOKEN，不返回明文 secret |
+| 全量审计 | 每次写操作（含部署成功/失败）记录 before/after state |
+| 部署可回滚 | 每次部署存 compose 快照，rollback 恢复完整配置不只是代码 |
+| Agent 沙箱 | ProtectSystem=strict, NoNewPrivileges=true，Agent 不能自修改或提权 |
+
+## Web Console
+
+Agent 内置仪表盘，浏览器访问 `http://<server>:9090/` 即可查看：
+
+- CPU / Memory / Disk 实时仪表
+- Docker 容器状态 + 端口映射
+- 最近 10 条审计记录
+- 版本号 + server_id
+
+深色主题，零外部依赖，全部内嵌在 Go binary 中。
+
+## 多服务器
+
+配置 `AGENT_ENDPOINTS` 环境变量即可路由多个 Agent：
+
+```json
+{
+  "env": {
+    "AGENT_ENDPOINTS": "srv_01=http://1.2.3.4:9090,secret1;srv_02=http://5.6.7.8:9090,secret2"
+  }
+}
+```
+
+不配时自动回退到 `AGENT_ENDPOINT` 单服务器模式，向后兼容。
+
+## Agent 更新
+
+每次 Release 由 GitHub Actions 自动构建 amd64/arm64 二进制。更新流程：
+
+```bash
+curl -fsSL https://github.com/Ye-Yu-Mo/AI-SRE-Agent/releases/latest/download/ai-server-agent \
+  -o /usr/local/bin/ai-server-agent
+chmod 755 /usr/local/bin/ai-server-agent
+systemctl restart ai-server-agent
+```
+
+Agent 出于安全设计不能自更新（`ProtectSystem=strict`），必须由外部触发。
 
 ## 项目结构
 
 ```
 ├── agent/                  # Go Agent — 运行在目标服务器
-│   ├── cmd/agent/          # 入口：ai-server-agent serve
+│   ├── cmd/agent/          # 入口：ai-server-agent serve + Web Console
+│   │   └── console/        # 嵌入式仪表盘 HTML
 │   ├── internal/
 │   │   ├── action/         # Typed Action 模型 + Plan 状态机
 │   │   ├── collector/      # /proc、systemd、Docker 状态采集
-│   │   ├── deploy/         # 部署流水线（clone/compose/healthcheck/release/rollback）
-│   │   ├── executor/       # Typed Executor + 命令沙箱
+│   │   ├── deploy/         # 部署流水线（proxy/compose/healthcheck/release/rollback）
+│   │   ├── executor/       # Typed Executor
 │   │   ├── graph/          # State Graph 拓扑采集
 │   │   ├── identity/       # Server identity 生成
 │   │   ├── plan/           # Plan 内存存储
 │   │   ├── risk/           # 硬编码风险分级表
+│   │   ├── secret/         # 日志脱敏
 │   │   └── storage/        # JSON 文件持久化（audit + releases）
 │   ├── install.sh          # 一行安装脚本
 │   └── uninstall.sh        # 卸载脚本
 ├── mcp-server/             # MCP Server — AI 交互层
 │   └── src/
-│       ├── index.ts        # 17 个 MCP tool 注册
-│       ├── client/agent.ts # Agent HTTP client
+│       ├── index.ts        # 18 个 MCP tool 注册
+│       ├── client/agent.ts # Agent HTTP client（多服务器路由）
 │       └── tools/server.ts # Tool handlers
+├── .github/workflows/      # CI/CD：测试 + 跨平台构建 + Release发布
 ├── .mcp.json               # Claude Code MCP 配置示例
-├── PLAN.md                 # 里程碑计划
 └── CHANGELOG.md
 ```
 
@@ -138,8 +183,10 @@ npm install && npm run build
 
 | 组件 | 技术 |
 |------|------|
-| Agent | Go，单一静态二进制（~8MB），无外部运行时依赖 |
+| Agent | Go，单一静态二进制（~10MB），零外部运行时依赖 |
 | MCP Server | TypeScript，@modelcontextprotocol/sdk |
+| Web Console | 内嵌 HTML/CSS/JS，Go embed，Pico.css 风格 |
 | 持久化 | JSON 文件（audit.jsonl + releases.jsonl） |
-| 部署 | systemd service + Docker Compose v2 |
+| 部署 | systemd service + Docker Compose v2 + Caddy 反向代理 |
 | 传输 | HTTP + shared secret |
+| CI/CD | GitHub Actions：vet → test → cross-compile → Release |
