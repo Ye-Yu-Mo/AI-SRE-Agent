@@ -54,7 +54,7 @@ npm install && npm run build
 
 重启 Claude Code 即可使用。
 
-## MCP Tools（20 个）
+## MCP Tools（22 个）
 
 ### 服务器管理
 | Tool | 功能 |
@@ -87,6 +87,8 @@ npm install && npm run build
 | Tool | 功能 |
 |------|------|
 | `plan.apply` | 执行已审批的计划 |
+| `command.run` | 执行 shell 命令（审批闸门 + 审计 + 脱敏） |
+| `file.write` | 上传文件到 Agent 服务器 |
 | `audit.search` | 查询操作审计日志 |
 
 ### 部署管理

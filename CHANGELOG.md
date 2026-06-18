@@ -16,6 +16,32 @@
 
 ---
 
+## v0.8.0 — 2026-06-18
+
+### 新增
+
+- **command.run**: 在 Agent 服务器执行任意 shell 命令（超时控制 + 审计日志 + 输出脱敏 + 审批闸门）
+- **file.write**: 上传文件到 Agent 服务器（base64，路径沙箱，禁止写系统路径）
+- **Deploy 超时 5 分钟**: 部署 API 不受 MCP 10s 限制，适应 Docker 镜像拉取
+
+### 修复
+
+- **app.apply_deploy 描述**: 移除过时的"反向代理规划中"（v0.4.0 已实现 Caddy）
+
+---
+
+## v0.7.0 — 2026-06-18
+
+### 新增
+
+- **Dockerfile-only 部署**: 纯 Dockerfile 项目（无 compose 文件）自动 `docker build → run -d -P`
+- **默认分支探测**: `git ls-remote --symref` 自动检测 repo 默认分支，不再猜 `main`
+- **结构化错误码**: 部署失败返回 `code/category/suggestion`，不再裸 exit code
+- **Agent 心跳**: 30s 心跳文件 + `/api/v1/agent/heartbeat` 端点
+- **失败路径清理**: 部署失败自动 `os.RemoveAll(workDir)`
+
+---
+
 ## v0.6.0 — 2026-06-18
 
 ### 新增
